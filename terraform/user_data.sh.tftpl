@@ -7,6 +7,11 @@ set -euxo pipefail
 
 exec > >(tee /var/log/ichnos-bootstrap.log) 2>&1
 
+# cloud-init's script execution doesn't set $HOME for root, but `go install` needs it
+# to compute its default module cache path (GOMODCACHE/GOPATH) - without this it fails
+# with "module cache not found: neither GOMODCACHE nor GOPATH is set".
+export HOME=/root
+
 # --- OS packages. AWS CLI is deliberately NOT installed via apt - Ubuntu 24.04
 # dropped the `awscli` package from its repos entirely (no installation candidate),
 # so this uses the official v2 installer instead, which has to come first since the
