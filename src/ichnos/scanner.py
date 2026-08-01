@@ -57,6 +57,19 @@ def _default_run_command(cmd: List[str], input: Optional[str] = None) -> str:
         text=True,
         check=False,
     )
+    if result.returncode != 0:
+        # A non-zero exit means the tool itself failed to run (bad flag, crash,
+        # missing binary) - this must never look identical to "ran fine, found
+        # nothing" to a caller that only inspects stdout. It did exactly that,
+        # undetected, for this project's entire deployment so far: probe_one's ZMap
+        # invocation used the wrong flag name (see its comment) and every resulting
+        # empty stdout was indistinguishable from a genuine non-response until this
+        # logging existed - surfaced only by manually running the exact same command
+        # by hand and actually reading its exit code and stderr.
+        logger.error(
+            "command failed (exit %d): %s -- stderr: %s",
+            result.returncode, " ".join(cmd), result.stderr.strip(),
+        )
     return result.stdout
 
 
@@ -75,7 +88,15 @@ def probe_one(
     run_command: CommandRunner = _default_run_command,
 ) -> Optional[str]:
     """One ZMap discovery probe against a single pseudorandom target. Returns the
-    responsive IP, or None if it didn't answer (or was blocklisted/excluded)."""
+    responsive IP, or None if it didn't answer (or was blocklisted/excluded).
+
+    Real, previously-undetected bug fixed here: this installed ZMap's actual flag is
+    `--blacklist-file` (older terminology) - not `--blocklist-file`, which is what
+    ZGrab2 correctly uses (`grab_one` below) and what this originally, wrongly,
+    assumed ZMap used too. `_default_run_command`'s check=False meant every call
+    silently exited 1 with an empty stdout, indistinguishable from a real "no
+    response" - meaning every random-candidate scan since deployment never actually
+    invoked ZMap at all. Found by manually running this exact command by hand."""
     output = run_command(
         [
             "zmap",
@@ -85,7 +106,7 @@ def probe_one(
             "1",
             "--seed",
             str(seed),
-            "--blocklist-file",
+            "--blacklist-file",
             blocklist_path,
         ],
         None,

@@ -3,7 +3,10 @@ from datetime import datetime
 from datetime import timezone
 
 from ichnos.ratelimit import TokenBucket
+from ichnos.scanner import _default_run_command
 from ichnos.scanner import derive_seed
+from ichnos.scanner import grab_one
+from ichnos.scanner import probe_one
 from ichnos.scanner import run_scan
 from ichnos.storage.memory import InMemoryStore
 
@@ -23,6 +26,56 @@ def _fake_run_command(responsive_seed, zgrab_result):
         raise AssertionError(f"unexpected command: {cmd}")
 
     return run_command
+
+
+def test_probe_one_uses_the_real_zmap_blacklist_flag_not_blocklist():
+    # Regression test for a real, previously-undetected bug: no test verified the
+    # exact flag name ZMap was invoked with, only that "zmap" was called at all - so
+    # a wrong flag name (--blocklist-file, which doesn't exist on this installed
+    # ZMap - the real flag is --blacklist-file) went undetected through every test
+    # run and the entire deployment until manually run by hand against the real
+    # binary.
+    calls = []
+
+    def run_command(cmd, input=None):
+        calls.append(cmd)
+        return ""
+
+    probe_one(80, 12345, "/tmp/blocklist.conf", run_command=run_command)
+
+    assert "--blacklist-file" in calls[0]
+    assert "--blocklist-file" not in calls[0]
+
+
+def test_grab_one_uses_the_zgrab2_blocklist_flag():
+    # ZGrab2's actual flag is --blocklist-file (newer terminology) - the opposite of
+    # ZMap's --blacklist-file above. Both are correct for their respective tools;
+    # this pins the deliberate difference so it can't silently drift either way.
+    calls = []
+
+    def run_command(cmd, input=None):
+        calls.append(cmd)
+        return ""
+
+    grab_one("1.2.3.4", 80, "http", "/tmp/blocklist.conf", run_command=run_command)
+
+    assert "--blocklist-file" in calls[0]
+    assert "--blacklist-file" not in calls[0]
+
+
+def test_default_run_command_logs_error_on_nonzero_exit(caplog):
+    import logging
+
+    with caplog.at_level(logging.ERROR, logger="ichnos.scanner"):
+        output = _default_run_command(["ls", "--this-flag-does-not-exist"])
+
+    assert output == ""  # still returns (empty) stdout rather than raising
+    assert any("command failed" in record.message for record in caplog.records)
+
+
+def test_default_run_command_silent_on_success():
+    output = _default_run_command(["echo", "hello"])
+    assert output.strip() == "hello"
 
 
 def test_run_scan_records_observation_and_new_version_for_responsive_host():
