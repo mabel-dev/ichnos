@@ -191,7 +191,12 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
     settings = Settings.from_env()
     store = _build_store(args.store, settings)
-    site_config = SiteConfig()
+    site_config = SiteConfig(
+        organisation=settings.site_organisation,
+        contact_email=settings.site_contact_email,
+        form_secret=settings.site_form_secret,
+        trust_proxy_headers=settings.trust_proxy_headers,
+    )
     app = create_app(store, site_config)
     uvicorn.run(app, host=args.host, port=args.port)
     return 0

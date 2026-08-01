@@ -1,9 +1,19 @@
 """Public information page + self-service opt-out (design doc §6).
 
 Served by the same instance/IP that does the scanning - deliberately no ALB/CloudFront
-in front (design doc §2), so `request.client.host` here is the real connecting IP, not
-one hop removed. This is what lets the opt-out form auto-detect the requester's IP
-without a proxy header that could be spoofed.
+in front (design doc §2), so there's no *network-level* hop with a different public
+identity between the visitor and this service. There is, however, a *local* nginx
+terminating TLS and reverse-proxying to this app on loopback (needed for certbot) - to
+that process, every request's `request.client.host` would read as nginx's loopback
+address, not the real visitor.
+
+`trust_proxy_headers=True` (set by the deployment, not the default) tells `_client_ip`
+to read `X-Forwarded-For` instead. This is only safe because nginx is configured to
+*overwrite* that header with what nginx itself observed (`proxy_set_header
+X-Forwarded-For $remote_addr;`, not the append-if-present form) rather than passing
+through whatever a client sent - so a spoofed header from the visitor never survives
+the hop. Leave this off (the default) for local dev/tests, where there's no proxy and
+`request.client.host` is already correct.
 
 The arithmetic challenge replaces a CAPTCHA per the spec: two small numbers are
 rendered into hidden form fields along with an HMAC over them, and the server re-derives
@@ -41,6 +51,7 @@ class SiteConfig:
     contact_email: str = "abuse@example.invalid"
     source_repo_url: str = "https://github.com/mabel-dev/ichnos"
     form_secret: str = "change-me-in-production"
+    trust_proxy_headers: bool = False
     faq: List[tuple] = field(
         default_factory=lambda: [
             (
@@ -68,7 +79,11 @@ class SiteConfig:
     )
 
 
-def _client_ip(request: Request) -> Optional[str]:
+def _client_ip(request: Request, *, trust_proxy_headers: bool) -> Optional[str]:
+    if trust_proxy_headers:
+        forwarded = request.headers.get("x-forwarded-for")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
     return request.client.host if request.client else None
 
 
@@ -168,7 +183,7 @@ See <a href="/opt-out">opt-out</a> below to request exclusion.</p>
 
     @app.get("/opt-out", response_class=HTMLResponse)
     def opt_out_form(request: Request) -> str:
-        detected_ip = _client_ip(request) or ""
+        detected_ip = _client_ip(request, trust_proxy_headers=config.trust_proxy_headers) or ""
         a, b, token = _make_challenge(config.form_secret)
         body = f"""
 <h1>Request exclusion</h1>
@@ -230,7 +245,7 @@ It takes effect before the next scheduled scan.</p>
                 ip_or_cidr=ip_or_cidr,
                 source=ExclusionSource.SELF_SERVE,
                 reason=reason.strip() or None,
-                requester_ip=_client_ip(request),
+                requester_ip=_client_ip(request, trust_proxy_headers=config.trust_proxy_headers),
             )
         )
 

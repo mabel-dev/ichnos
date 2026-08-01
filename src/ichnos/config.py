@@ -43,6 +43,15 @@ class Settings:
     opteryx_client_id: str = ""
     opteryx_client_secret: str = ""
 
+    # Public site (design doc §6)
+    site_organisation: str = "TBD"
+    site_contact_email: str = "abuse@example.invalid"
+    site_form_secret: str = "change-me-in-production"
+    # True in the real deployment - nginx terminates TLS and reverse-proxies to this
+    # app on loopback, so the opt-out form must read the client IP from the header
+    # nginx sets, not request.client.host (see webapp/app.py's module docstring).
+    trust_proxy_headers: bool = False
+
     @classmethod
     def from_env(cls) -> "Settings":
         return cls(
@@ -61,4 +70,8 @@ class Settings:
             opteryx_collection=_env("OPTERYX_COLLECTION", cls.opteryx_collection),
             opteryx_client_id=_env("OPTERYX_CLIENT_ID", cls.opteryx_client_id),
             opteryx_client_secret=_env("OPTERYX_CLIENT_SECRET", cls.opteryx_client_secret),
+            site_organisation=_env("SITE_ORGANISATION", cls.site_organisation),
+            site_contact_email=_env("SITE_CONTACT_EMAIL", cls.site_contact_email),
+            site_form_secret=_env("SITE_FORM_SECRET", cls.site_form_secret),
+            trust_proxy_headers=_env("TRUST_PROXY_HEADERS", "") == "1",
         )

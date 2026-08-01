@@ -8,10 +8,17 @@ from ichnos.webapp import SiteConfig
 from ichnos.webapp import create_app
 
 
-def _client():
+def _client(*, trust_proxy_headers=False):
     store = InMemoryStore()
     store.schedule.put(ScheduleEntry(protocol="http", port=80, zgrab2_module="http"))
-    app = create_app(store, SiteConfig(form_secret="test-secret", contact_email="abuse@example.invalid"))
+    app = create_app(
+        store,
+        SiteConfig(
+            form_secret="test-secret",
+            contact_email="abuse@example.invalid",
+            trust_proxy_headers=trust_proxy_headers,
+        ),
+    )
     return TestClient(app), store
 
 
@@ -92,6 +99,22 @@ def test_opt_out_submit_tampered_token_is_rejected():
     )
     assert resp.status_code == 400
     assert store.exclusions.list_all() == []
+
+
+def test_opt_out_ignores_forwarded_header_when_not_trusted():
+    # Default (no proxy in front, e.g. local dev/tests): trust the raw connection,
+    # never a client-suppliable header.
+    client, _ = _client(trust_proxy_headers=False)
+    resp = client.get("/opt-out", headers={"X-Forwarded-For": "203.0.113.9"})
+    assert "203.0.113.9" not in resp.text
+
+
+def test_opt_out_uses_forwarded_header_when_trusted():
+    # Real deployment: nginx sits in front on loopback and overwrites this header
+    # with what it observed, so it's safe to trust here (see webapp/app.py docstring).
+    client, _ = _client(trust_proxy_headers=True)
+    resp = client.get("/opt-out", headers={"X-Forwarded-For": "203.0.113.9"})
+    assert "203.0.113.9" in resp.text
 
 
 def test_opt_out_submit_invalid_ip_is_rejected():
