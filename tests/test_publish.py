@@ -1,0 +1,88 @@
+import os
+from types import SimpleNamespace
+
+from opteryx_upload import ConflictResolution
+
+from ichnos.publish import PublishError
+from ichnos.publish import append_ndjson
+from ichnos.publish import clear_pending
+from ichnos.publish import publish_hour
+from ichnos.publish import read_pending_datasets
+
+
+class FakeSession:
+    def __init__(self, fail_dataset=None):
+        self.uploaded = []
+        self.committed_target = None
+        self._fail_dataset = fail_dataset
+
+    def upload_file(self, path):
+        self.uploaded.append(path)
+
+    def inspect(self):
+        if self._fail_dataset and self._fail_dataset in self.uploaded[-1]:
+            return SimpleNamespace(has_issues=True, issues=["bad schema"])
+        return SimpleNamespace(has_issues=False, issues=[])
+
+    def commit(self, target, *, snapshot_message=None, conflict_resolution=None):
+        assert conflict_resolution == ConflictResolution.APPEND
+        self.committed_target = target
+        return SimpleNamespace(
+            table=target.dataset, commit_id="c1", rows_written=len(self.uploaded), files_created=1
+        )
+
+
+class FakeClient:
+    def __init__(self, fail_dataset=None):
+        self.sessions = []
+        self._fail_dataset = fail_dataset
+
+    def create_session(self):
+        session = FakeSession(fail_dataset=self._fail_dataset)
+        self.sessions.append(session)
+        return session
+
+
+def test_publish_hour_commits_every_nonempty_dataset(tmp_path):
+    client = FakeClient()
+    datasets = {
+        "observations": [{"ip": "1.2.3.4"}],
+        "versions": [{"fingerprint_id": "abc"}],
+        "empty_dataset": [],
+    }
+    results = publish_hour(
+        client, datasets, workspace="scan", collection="measurement", tmp_dir=str(tmp_path)
+    )
+    assert set(results.keys()) == {"observations", "versions"}
+    assert os.path.exists(tmp_path / "observations.ndjson")
+    assert not os.path.exists(tmp_path / "empty_dataset.ndjson")
+    assert client.sessions[0].committed_target.workspace == "scan"
+    assert client.sessions[0].committed_target.collection == "measurement"
+
+
+def test_publish_hour_raises_and_stops_on_inspect_issues(tmp_path):
+    client = FakeClient(fail_dataset="observations")
+    datasets = {"observations": [{"ip": "1.2.3.4"}], "versions": [{"fingerprint_id": "abc"}]}
+    try:
+        publish_hour(
+            client, datasets, workspace="scan", collection="measurement", tmp_dir=str(tmp_path)
+        )
+        raise AssertionError("expected PublishError")
+    except PublishError as exc:
+        assert exc.dataset == "observations"
+
+
+def test_pending_ndjson_roundtrip(tmp_path):
+    pending_dir = str(tmp_path)
+    append_ndjson(f"{pending_dir}/observations.ndjson", [{"a": 1}])
+    append_ndjson(f"{pending_dir}/observations.ndjson", [{"a": 2}])
+
+    datasets = read_pending_datasets(pending_dir)
+    assert datasets == {"observations": [{"a": 1}, {"a": 2}]}
+
+    clear_pending(pending_dir, ["observations"])
+    assert read_pending_datasets(pending_dir) == {}
+
+
+def test_read_pending_datasets_missing_dir_returns_empty():
+    assert read_pending_datasets("/nonexistent/path/for/sure") == {}
