@@ -98,12 +98,24 @@ def grab_one(
     ip: str,
     port: int,
     module: str,
+    blocklist_path: str,
     *,
     run_command: CommandRunner = _default_run_command,
 ) -> Optional[dict]:
     """One ZGrab2 handshake against a single target. Returns the parsed `data.<module>`
-    object, or None if ZGrab2 produced no parseable result."""
-    output = run_command(["zgrab2", module, "--port", str(port)], f"{ip}\n")
+    object, or None if ZGrab2 produced no parseable result.
+
+    `blocklist_path` is passed through as ZGrab2's own `--blocklist-file` - belt and
+    suspenders so ZGrab2 independently enforces the same exclusions ZMap's discovery
+    step already did, rather than leaving ZGrab2's separate default blocklist file to
+    resolve via `$HOME` (which isn't reliably set across every invocation context this
+    runs in - cron, systemd, an ad-hoc shell - and produces a silent, unexplained
+    "no result" if ZGrab2 can't find its default file at all, discovered exactly that
+    way against a real target)."""
+    output = run_command(
+        ["zgrab2", module, "--port", str(port), "--blocklist-file", blocklist_path],
+        f"{ip}\n",
+    )
     line = output.strip().splitlines()[0] if output.strip() else ""
     if not line:
         return None
@@ -130,6 +142,7 @@ def _grab_and_record(
     ip: str,
     port: int,
     zgrab2_module: str,
+    blocklist_path: str,
     run_command: CommandRunner,
     current_state: CurrentStateStore,
     today: str,
@@ -149,7 +162,7 @@ def _grab_and_record(
     visible in aggregate, via `targets_attempted` vs `hosts_responsive` on the
     ScanMetadata row (which is queued for publish every run regardless).
     """
-    module_result = grab_one(ip, port, zgrab2_module, run_command=run_command)
+    module_result = grab_one(ip, port, zgrab2_module, blocklist_path, run_command=run_command)
     if module_result is None:
         logger.info("scan %s: %s responded to discovery but zgrab2 produced no result", scan_id, ip)
         outcome.observations.append(
@@ -263,7 +276,8 @@ def run_scan(
             rate_limiter.wait()
             _grab_and_record(
                 scan_id=scan_id, protocol=protocol, ip=target_ip, port=port,
-                zgrab2_module=zgrab2_module, run_command=run_command,
+                zgrab2_module=zgrab2_module, blocklist_path=blocklist_path,
+                run_command=run_command,
                 current_state=current_state, today=today, clock=clock,
                 outcome=outcome, metadata=metadata,
             )
@@ -295,7 +309,8 @@ def run_scan(
         rate_limiter.wait()
         _grab_and_record(
             scan_id=scan_id, protocol=protocol, ip=ip, port=port,
-            zgrab2_module=zgrab2_module, run_command=run_command,
+            zgrab2_module=zgrab2_module, blocklist_path=blocklist_path,
+            run_command=run_command,
             current_state=current_state, today=today, clock=clock,
             outcome=outcome, metadata=metadata,
         )
