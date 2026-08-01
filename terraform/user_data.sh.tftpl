@@ -1,0 +1,218 @@
+#!/bin/bash
+# ichnos worker bootstrap - runs once per instance (EC2 user-data only fires on first
+# boot of a given instance, which is exactly right: the ASG launches a fresh instance
+# on every replacement, so this runs fresh every time, matching the stateless-worker
+# principle in design doc §2/§7 - nothing here depends on prior instance state).
+set -euxo pipefail
+
+exec > >(tee /var/log/ichnos-bootstrap.log) 2>&1
+
+TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 60")
+INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
+
+# --- Fixed identity: reassociate the pre-allocated EIP (design doc §2) ---
+aws ec2 associate-address \
+  --instance-id "$INSTANCE_ID" \
+  --allocation-id "${eip_allocation_id}" \
+  --region "${region}" \
+  --allow-reassociation
+
+# --- OS packages ---
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -y
+apt-get install -y \
+  python3-pip python3-venv \
+  zmap \
+  nginx \
+  certbot python3-certbot-dns-route53 \
+  golang-go \
+  git jq awscli openssl
+
+# --- zgrab2 (no root needed to run it, but building it does need Go) ---
+GOBIN=/usr/local/bin go install github.com/zmap/zgrab2/cmd/zgrab2@latest
+mkdir -p /root/.config/zgrab2 /home/ubuntu/.config/zgrab2 2>/dev/null || true
+touch /root/.config/zgrab2/blocklist.conf
+
+# --- ichnos itself, from source (not yet published to PyPI) ---
+python3 -m venv /opt/ichnos-venv
+/opt/ichnos-venv/bin/pip install --upgrade pip
+/opt/ichnos-venv/bin/pip install "ichnos[aws] @ git+${ichnos_git_url}@${ichnos_git_ref}"
+
+# --- Config: fetch the Opteryx PAT from Secrets Manager, write env file (0600) ---
+SECRET_JSON=$(aws secretsmanager get-secret-value --secret-id "${opteryx_pat_secret_arn}" --region "${region}" --query SecretString --output text)
+OPTERYX_CLIENT_ID=$(echo "$SECRET_JSON" | jq -r .client_id)
+OPTERYX_CLIENT_SECRET=$(echo "$SECRET_JSON" | jq -r .client_secret)
+
+mkdir -p /etc/ichnos
+cat > /etc/ichnos/env <<EOF
+AWS_DEFAULT_REGION=${region}
+ICHNOS_EXCLUSIONS_TABLE=${exclusions_table}
+ICHNOS_SCHEDULE_TABLE=${schedule_table}
+ICHNOS_SCAN_METADATA_TABLE=${scan_metadata_table}
+ICHNOS_CURRENT_STATE_TABLE=${current_state_table}
+ICHNOS_RATE_INTERVAL_SECONDS=${rate_interval_seconds}
+ICHNOS_OPTERYX_WORKSPACE=${opteryx_workspace}
+ICHNOS_OPTERYX_COLLECTION=${opteryx_collection}
+ICHNOS_OPTERYX_CLIENT_ID=$OPTERYX_CLIENT_ID
+ICHNOS_OPTERYX_CLIENT_SECRET=$OPTERYX_CLIENT_SECRET
+ICHNOS_SITE_ORGANISATION=${organisation_name}
+ICHNOS_SITE_CONTACT_EMAIL=${abuse_email}
+ICHNOS_TRUST_PROXY_HEADERS=1
+ICHNOS_JURISDICTION_S3_BUCKET=${jurisdiction_s3_bucket}
+ICHNOS_JURISDICTION_S3_KEY=${jurisdiction_s3_key}
+EOF
+chmod 600 /etc/ichnos/env
+
+mkdir -p /var/lib/ichnos/pending /var/lib/ichnos/publish-tmp /var/log/ichnos
+
+# --- Seed ScanSchedule (idempotent - only fills in rows that don't already exist, so
+# a manual edit made after deploy is never clobbered by a later instance replacement) ---
+set -a; source /etc/ichnos/env; set +a
+/opt/ichnos-venv/bin/python3 <<'PYEOF'
+from ichnos.storage.dynamodb import DynamoDBStore
+from ichnos.models import ScheduleEntry
+
+store = DynamoDBStore()
+if store.schedule.get("http") is None:
+    store.schedule.put(ScheduleEntry(protocol="http", port=80, zgrab2_module="http", cadence="daily"))
+if store.schedule.get("https") is None:
+    store.schedule.put(ScheduleEntry(protocol="https", port=443, zgrab2_module="tls", cadence="daily"))
+PYEOF
+
+# --- Jurisdiction blocklist: refresh once now so scanning never starts with an empty
+# exclusion list (design doc §14 Phase 3: "jurisdiction blocklist job ships in this
+# phase, not later - the exclusion needs to be live before the first real public
+# target is scanned"). Also uploads to S3 for the next instance to fall back to. ---
+/opt/ichnos-venv/bin/ichnos jurisdiction-refresh --source rir --countries "${jurisdiction_countries}" || \
+  echo "jurisdiction-refresh failed at boot - will retry on its weekly cron schedule; scan.cmd_scan also falls back to the last S3 copy if one exists"
+
+# --- nginx: HTTP only until certbot succeeds for the first time (deploy-hook below
+# adds the 443 block once a cert actually exists - no self-signed-placeholder
+# hackery needed since we don't depend on nginx being ready for cert *issuance*,
+# only for serving after it's already been issued) ---
+cat > /etc/nginx/sites-available/ichnos <<NGINXEOF
+server {
+    listen 80;
+    server_name ${domain_name};
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+}
+NGINXEOF
+ln -sf /etc/nginx/sites-available/ichnos /etc/nginx/sites-enabled/ichnos
+rm -f /etc/nginx/sites-enabled/default
+nginx -t && systemctl restart nginx
+
+# --- certbot deploy-hook: fires only after a successful (re)issuance. Writes the full
+# HTTP+HTTPS nginx config and reloads - this is what "turns on" 443 the first time,
+# and keeps both blocks correct on every future renewal. ---
+cat > /etc/ichnos/certbot-deploy-hook.sh <<HOOKEOF
+#!/bin/bash
+set -euxo pipefail
+cat > /etc/nginx/sites-available/ichnos <<NGINXEOF
+server {
+    listen 80;
+    server_name ${domain_name};
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host \\\$host;
+        proxy_set_header X-Forwarded-For \\\$remote_addr;
+        proxy_set_header X-Forwarded-Proto \\\$scheme;
+    }
+}
+server {
+    listen 443 ssl;
+    server_name ${domain_name};
+    ssl_certificate     /etc/letsencrypt/live/${domain_name}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${domain_name}/privkey.pem;
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host \\\$host;
+        proxy_set_header X-Forwarded-For \\\$remote_addr;
+        proxy_set_header X-Forwarded-Proto \\\$scheme;
+    }
+}
+NGINXEOF
+nginx -t && systemctl reload nginx
+HOOKEOF
+chmod +x /etc/ichnos/certbot-deploy-hook.sh
+
+# --- Cert issuance via DNS-01 (route53 plugin) - deliberately NOT the nginx/HTTP-01
+# plugin, so issuance never depends on this instance's nginx state. --keep-until-
+# expiring makes repeated invocations a safe no-op once a valid cert exists.
+#
+# IMPORTANT: the very first attempt will fail if the domain's nameservers haven't
+# been delegated to this Route 53 zone yet at the registrar (README.md's manual step)
+# - that's expected, not a bug. The cron entry below retries every 30 minutes until
+# delegation propagates and issuance succeeds.
+certbot certonly --dns-route53 --dns-route53-propagation-seconds 30 \
+  -d "${domain_name}" -m "${abuse_email}" --agree-tos --non-interactive \
+  --keep-until-expiring --deploy-hook /etc/ichnos/certbot-deploy-hook.sh || \
+  echo "initial certbot issuance failed (likely DNS delegation not yet propagated) - will retry via cron"
+
+# --- systemd: the app itself, behind nginx ---
+cat > /etc/systemd/system/ichnos-web.service <<SERVICEEOF
+[Unit]
+Description=ichnos public info page + opt-out
+After=network.target
+
+[Service]
+EnvironmentFile=/etc/ichnos/env
+ExecStart=/opt/ichnos-venv/bin/ichnos serve --host 127.0.0.1 --port 8000 --store dynamodb
+Restart=always
+RestartSec=5
+User=nobody
+Group=nogroup
+
+[Install]
+WantedBy=multi-user.target
+SERVICEEOF
+systemctl daemon-reload
+systemctl enable --now ichnos-web
+
+# --- cron: scan (poll every 15 min, one process per protocol), publish hourly,
+# jurisdiction-refresh weekly, certbot retry/renewal every 30 min (see note above) ---
+cat > /etc/cron.d/ichnos <<CRONEOF
+*/15 * * * * root . /etc/ichnos/env && /opt/ichnos-venv/bin/ichnos scan --protocol http --candidates ${scan_candidates_per_cron_tick} --store dynamodb >> /var/log/ichnos/scan-http.log 2>&1
+*/15 * * * * root . /etc/ichnos/env && /opt/ichnos-venv/bin/ichnos scan --protocol https --candidates ${scan_candidates_per_cron_tick} --store dynamodb >> /var/log/ichnos/scan-https.log 2>&1
+5 * * * * root . /etc/ichnos/env && /opt/ichnos-venv/bin/ichnos publish >> /var/log/ichnos/publish.log 2>&1
+0 3 * * 0 root . /etc/ichnos/env && /opt/ichnos-venv/bin/ichnos jurisdiction-refresh --source rir --countries "${jurisdiction_countries}" >> /var/log/ichnos/jurisdiction.log 2>&1
+*/30 * * * * root certbot certonly --dns-route53 --dns-route53-propagation-seconds 30 -d "${domain_name}" -m "${abuse_email}" --agree-tos --non-interactive --keep-until-expiring --deploy-hook /etc/ichnos/certbot-deploy-hook.sh >> /var/log/ichnos/certbot.log 2>&1
+CRONEOF
+chmod 644 /etc/cron.d/ichnos
+
+# --- CloudWatch agent: ships /var/log/ichnos/*.log to the log group (design doc §10 -
+# "structured logs should be produced for scan execution, protocol execution,
+# exclusions, public website activity, operational failures") ---
+curl -s https://amazoncloudwatch-agent.s3.amazonaws.com/ubuntu/arm64/latest/amazon-cloudwatch-agent.deb -o /tmp/cw-agent.deb
+dpkg -i /tmp/cw-agent.deb || apt-get install -f -y
+
+cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<CWEOF
+{
+  "logs": {
+    "logs_collected": {
+      "files": {
+        "collect_list": [
+          {
+            "file_path": "/var/log/ichnos/*.log",
+            "log_group_name": "${log_group_name}",
+            "log_stream_name": "{instance_id}/{file_basename}"
+          },
+          {
+            "file_path": "/var/log/ichnos-bootstrap.log",
+            "log_group_name": "${log_group_name}",
+            "log_stream_name": "{instance_id}/bootstrap"
+          }
+        ]
+      }
+    }
+  }
+}
+CWEOF
+/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s \
+  -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+
+echo "ichnos bootstrap complete"

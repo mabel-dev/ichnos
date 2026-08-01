@@ -69,6 +69,7 @@ data "aws_iam_policy_document" "scanner" {
     actions = [
       "logs:CreateLogStream",
       "logs:PutLogEvents",
+      "logs:DescribeLogStreams", # needed by the CloudWatch agent tailing /var/log/ichnos/*
     ]
     resources = ["${aws_cloudwatch_log_group.scanner.arn}:*"]
   }

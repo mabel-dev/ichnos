@@ -1,0 +1,16 @@
+# Copy to terraform.tfvars (gitignored) and fill in.
+
+abuse_email = "abuse@ichnos.online" # required, no default - shown on the public info page
+
+# Everything below already has a sensible default (see variables.tf) - only override
+# if you want something different.
+
+# aws_region                    = "us-east-1"
+# domain_name                   = "ichnos.online"
+# organisation_name             = "TBD"
+# instance_type                 = "t4g.small"
+# opteryx_workspace             = "scan"
+# opteryx_collection            = "measurement"
+# rate_interval_seconds         = 5
+# scan_candidates_per_cron_tick = 40
+# jurisdiction_countries        = ["JP", "KP", "KR", "CN", "RU", "IR"]
