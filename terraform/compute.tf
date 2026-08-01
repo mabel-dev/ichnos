@@ -74,7 +74,7 @@ resource "aws_autoscaling_group" "scanner" {
   desired_capacity    = 1
   min_size            = 1
   max_size            = 1
-  vpc_zone_identifier = data.aws_subnets.default.ids
+  vpc_zone_identifier = [aws_subnet.public.id]
   health_check_type   = "EC2"
 
   # Best-effort - EC2 health checks don't know this instance is "healthy" in any
