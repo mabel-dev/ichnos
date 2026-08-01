@@ -8,3 +8,10 @@ dist/
 build/
 *.conf
 /var/
+
+# Scratch files people paste credential-bearing commands into - this repo is public,
+# so these should never be one `git add -A` away from landing in history.
+temp.txt
+scratch.txt
+*.secret
+secrets.txt
