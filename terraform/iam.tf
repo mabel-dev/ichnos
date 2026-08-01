@@ -86,9 +86,23 @@ data "aws_iam_policy_document" "scanner" {
   }
 
   statement {
-    sid       = "ReassociateOwnEip"
-    actions   = ["ec2:AssociateAddress"]
-    resources = ["arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:elastic-ip/${aws_eip.scanner.id}"]
+    # ec2:AssociateAddress touches two resource types in one call - the EIP and the
+    # target instance - and IAM requires an explicit allow on both, not just the EIP
+    # (discovered via a real UnauthorizedOperation on the instance ARN when this only
+    # granted the elastic-ip ARN). The instance ARN can't be pinned to one ID since a
+    # replacement instance gets a new one every time, so it's scoped by the Name tag
+    # every launch-template instance carries instead (compute.tf's tag_specifications).
+    sid     = "ReassociateOwnEip"
+    actions = ["ec2:AssociateAddress"]
+    resources = [
+      "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:elastic-ip/${aws_eip.scanner.id}",
+      "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:instance/*",
+    ]
+    condition {
+      test     = "StringEquals"
+      variable = "ec2:ResourceTag/Name"
+      values   = ["${var.project_name}-scanner"]
+    }
   }
 
   statement {
