@@ -210,10 +210,10 @@ systemctl enable --now ichnos-web
 # --- cron: scan (poll every 15 min, one process per protocol), publish hourly,
 # jurisdiction-refresh weekly, certbot retry/renewal every 30 min (see note above) ---
 cat > /etc/cron.d/ichnos <<CRONEOF
-*/15 * * * * root . /etc/ichnos/env && /opt/ichnos-venv/bin/ichnos scan --protocol http --candidates ${scan_candidates_per_cron_tick} --store dynamodb >> /var/log/ichnos/scan-http.log 2>&1
-*/15 * * * * root . /etc/ichnos/env && /opt/ichnos-venv/bin/ichnos scan --protocol https --candidates ${scan_candidates_per_cron_tick} --store dynamodb >> /var/log/ichnos/scan-https.log 2>&1
-5 * * * * root . /etc/ichnos/env && /opt/ichnos-venv/bin/ichnos publish >> /var/log/ichnos/publish.log 2>&1
-0 3 * * 0 root . /etc/ichnos/env && /opt/ichnos-venv/bin/ichnos jurisdiction-refresh --source rir --countries "${jurisdiction_countries}" >> /var/log/ichnos/jurisdiction.log 2>&1
+*/15 * * * * root set -a; . /etc/ichnos/env; set +a; /opt/ichnos-venv/bin/ichnos scan --protocol http --candidates ${scan_candidates_per_cron_tick} --store dynamodb >> /var/log/ichnos/scan-http.log 2>&1
+*/15 * * * * root set -a; . /etc/ichnos/env; set +a; /opt/ichnos-venv/bin/ichnos scan --protocol https --candidates ${scan_candidates_per_cron_tick} --store dynamodb >> /var/log/ichnos/scan-https.log 2>&1
+5 * * * * root set -a; . /etc/ichnos/env; set +a; /opt/ichnos-venv/bin/ichnos publish >> /var/log/ichnos/publish.log 2>&1
+0 3 * * 0 root set -a; . /etc/ichnos/env; set +a; /opt/ichnos-venv/bin/ichnos jurisdiction-refresh --source rir --countries "${jurisdiction_countries}" >> /var/log/ichnos/jurisdiction.log 2>&1
 */30 * * * * root certbot certonly --dns-route53 --dns-route53-propagation-seconds 30 -d "${domain_name}" -m "${abuse_email}" --agree-tos --non-interactive --keep-until-expiring --deploy-hook /etc/ichnos/certbot-deploy-hook.sh >> /var/log/ichnos/certbot.log 2>&1
 CRONEOF
 chmod 644 /etc/cron.d/ichnos
