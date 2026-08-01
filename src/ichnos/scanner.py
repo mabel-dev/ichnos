@@ -37,9 +37,12 @@ from .models import CurrentStateRecord
 from .models import Observation
 from .models import ScanMetadataRecord
 from .models import VersionRecord
+from .logging_setup import get_logger
 from .normalize import normalize
 from .ratelimit import TokenBucket
 from .storage.base import CurrentStateStore
+
+logger = get_logger(__name__)
 
 CommandRunner = Callable[[List[str], Optional[str]], str]
 
@@ -145,17 +148,31 @@ def run_scan(
     )
     outcome = ScanRunOutcome(metadata=metadata)
     today = started_at.date().isoformat()
+    logger.info(
+        "scan %s: starting %d candidates, protocol=%s port=%d seed=%d",
+        scan_id, candidate_count, protocol, port, seed,
+    )
 
     for i in range(candidate_count):
         rate_limiter.wait()
-        ip = probe_one(port, derive_seed(seed, i), blocklist_path, run_command=run_command)
+        candidate_seed = derive_seed(seed, i)
+        ip = probe_one(port, candidate_seed, blocklist_path, run_command=run_command)
         metadata.targets_attempted += 1
         if ip is None:
+            logger.info(
+                "scan %s [%d/%d] seed=%d: no response", scan_id, i + 1, candidate_count,
+                candidate_seed,
+            )
             continue
+        logger.info(
+            "scan %s [%d/%d] seed=%d: %s responded, grabbing", scan_id, i + 1, candidate_count,
+            candidate_seed, ip,
+        )
 
         rate_limiter.wait()
         module_result = grab_one(ip, port, zgrab2_module, run_command=run_command)
         if module_result is None:
+            logger.info("scan %s: %s - zgrab2 produced no result", scan_id, ip)
             continue
 
         metadata.hosts_responsive += 1
@@ -163,6 +180,11 @@ def run_scan(
         fp_id = fingerprint_id(payload)
 
         current = current_state.get(protocol, ip, port)
+        is_new = current is None or current.fingerprint_id != fp_id
+        logger.info(
+            "scan %s: %s fingerprint=%s (%s)", scan_id, ip, fp_id,
+            "new" if is_new else "unchanged",
+        )
         observed_at = clock()
         outcome.observations.append(
             Observation(
@@ -176,7 +198,7 @@ def run_scan(
             )
         )
 
-        if current is None or current.fingerprint_id != fp_id:
+        if is_new:
             outcome.new_versions.append(
                 (
                     protocol,

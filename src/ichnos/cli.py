@@ -38,6 +38,8 @@ from .blocklist import write_blocklist_file
 from .config import Settings
 from .jurisdiction import DEFAULT_COUNTRIES
 from .jurisdiction import refresh_jurisdiction_blocklist
+from .logging_setup import configure_logging
+from .logging_setup import get_logger
 from .publish import PublishBatch
 from .publish import PublishError
 from .publish import append_ndjson
@@ -49,6 +51,8 @@ from .scanner import run_scan
 from .storage.memory import InMemoryStore
 from .webapp import SiteConfig
 from .webapp import create_app
+
+logger = get_logger(__name__)
 
 
 def _build_store(backend: str, settings: Settings):
@@ -80,7 +84,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
 
     entry = store.schedule.get(args.protocol)
     if entry is None or not entry.enabled:
-        print(f"protocol {args.protocol!r} is not an enabled ScanSchedule entry", file=sys.stderr)
+        logger.error("protocol %r is not an enabled ScanSchedule entry", args.protocol)
         return 1
 
     exclusion_entries = [e.ip_or_cidr for e in store.exclusions.list_all()]
@@ -89,11 +93,18 @@ def cmd_scan(args: argparse.Namespace) -> int:
         exclusion_entries=exclusion_entries, jurisdiction_cidrs=jurisdiction_cidrs
     )
     write_blocklist_file(settings.blocklist_path, cidrs)
-    print(f"blocklist rebuilt: {len(cidrs)} entries -> {settings.blocklist_path}")
+    logger.info(
+        "blocklist rebuilt: %d entries (%d exclusions, %d jurisdiction) -> %s",
+        len(cidrs), len(exclusion_entries), len(jurisdiction_cidrs), settings.blocklist_path,
+    )
 
     seed = args.seed if args.seed is not None else int(date.today().strftime("%Y%m%d"))
     rate_limiter = TokenBucket(settings.rate_interval_seconds, burst=1)
     scan_id = f"{args.protocol}-{uuid.uuid4().hex[:12]}"
+    logger.info(
+        "scan %s starting: protocol=%s port=%s candidates=%d seed=%d",
+        scan_id, args.protocol, entry.port, args.candidates, seed,
+    )
 
     outcome = run_scan(
         scan_id=scan_id,
@@ -113,10 +124,10 @@ def cmd_scan(args: argparse.Namespace) -> int:
     for dataset, rows in batch.datasets().items():
         append_ndjson(f"{settings.pending_dir}/{dataset}.ndjson", rows)
 
-    print(
-        f"scan {scan_id} done: {outcome.metadata.targets_attempted} attempted, "
-        f"{outcome.metadata.hosts_responsive} responsive, "
-        f"{len(outcome.new_versions)} new fingerprints"
+    logger.info(
+        "scan %s done: %d attempted, %d responsive, %d new fingerprints",
+        scan_id, outcome.metadata.targets_attempted, outcome.metadata.hosts_responsive,
+        len(outcome.new_versions),
     )
     return 0
 
@@ -125,14 +136,13 @@ def cmd_publish(args: argparse.Namespace) -> int:
     settings = Settings.from_env()
     datasets = read_pending_datasets(settings.pending_dir)
     if not datasets:
-        print("nothing pending to publish")
+        logger.info("nothing pending to publish")
         return 0
 
     if not settings.opteryx_client_id or not settings.opteryx_client_secret:
-        print(
+        logger.error(
             "ICHNOS_OPTERYX_CLIENT_ID / ICHNOS_OPTERYX_CLIENT_SECRET not set - "
-            "cannot authenticate to the Opteryx Upload Service",
-            file=sys.stderr,
+            "cannot authenticate to the Opteryx Upload Service"
         )
         return 1
 
@@ -153,23 +163,25 @@ def cmd_publish(args: argparse.Namespace) -> int:
             tmp_dir=settings.publish_tmp_dir,
         )
     except PublishError as exc:
-        print(f"publish failed, leaving pending files in place for retry: {exc}", file=sys.stderr)
+        logger.error("publish failed, leaving pending files in place for retry: %s", exc)
         return 1
 
     clear_pending(settings.pending_dir, list(datasets.keys()))
     for dataset, commit in results.items():
-        print(f"{dataset}: commit {commit.commit_id}, {commit.rows_written} rows")
+        logger.info("%s: commit %s, %s rows", dataset, commit.commit_id, commit.rows_written)
     return 0
 
 
 def cmd_jurisdiction_refresh(args: argparse.Namespace) -> int:
     settings = Settings.from_env()
     countries = tuple(args.countries.split(",")) if args.countries else DEFAULT_COUNTRIES
+    logger.info("fetching jurisdiction blocklist from %s for %s", args.source, countries)
     result = refresh_jurisdiction_blocklist(countries, source=args.source)
     write_blocklist_file(settings.jurisdiction_blocklist_path, result.cidrs)
-    print(
-        f"jurisdiction blocklist refreshed from {result.source}: {result.count} CIDRs "
-        f"for {', '.join(result.countries)} -> {settings.jurisdiction_blocklist_path}"
+    logger.info(
+        "jurisdiction blocklist refreshed from %s: %d CIDRs for %s -> %s",
+        result.source, result.count, ", ".join(result.countries),
+        settings.jurisdiction_blocklist_path,
     )
     return 0
 
@@ -216,6 +228,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv=None) -> int:
+    configure_logging()
     parser = build_parser()
     args = parser.parse_args(argv)
     return args.func(args)
