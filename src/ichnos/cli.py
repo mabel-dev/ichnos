@@ -29,6 +29,7 @@ persist between invocations and is not meant for anything beyond a demo.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import uuid
 from datetime import date
@@ -47,6 +48,8 @@ from .publish import clear_pending
 from .publish import publish_hour
 from .publish import read_pending_datasets
 from .ratelimit import TokenBucket
+from .s3sync import download_file as s3_download_file
+from .s3sync import upload_file as s3_upload_file
 from .scanner import run_scan
 from .storage.memory import InMemoryStore
 from .webapp import SiteConfig
@@ -86,6 +89,18 @@ def cmd_scan(args: argparse.Namespace) -> int:
     if entry is None or not entry.enabled:
         logger.error("protocol %r is not an enabled ScanSchedule entry", args.protocol)
         return 1
+
+    if not os.path.exists(settings.jurisdiction_blocklist_path) and settings.jurisdiction_s3_bucket:
+        found = s3_download_file(
+            settings.jurisdiction_s3_bucket,
+            settings.jurisdiction_s3_key,
+            settings.jurisdiction_blocklist_path,
+        )
+        logger.info(
+            "no local jurisdiction blocklist - %s from s3://%s/%s",
+            "pulled last-known-good copy" if found else "none found either, starting empty",
+            settings.jurisdiction_s3_bucket, settings.jurisdiction_s3_key,
+        )
 
     exclusion_entries = [e.ip_or_cidr for e in store.exclusions.list_all()]
     jurisdiction_cidrs = _read_jurisdiction_cidrs(settings.jurisdiction_blocklist_path)
@@ -183,6 +198,17 @@ def cmd_jurisdiction_refresh(args: argparse.Namespace) -> int:
         result.source, result.count, ", ".join(result.countries),
         settings.jurisdiction_blocklist_path,
     )
+
+    if settings.jurisdiction_s3_bucket:
+        s3_upload_file(
+            settings.jurisdiction_s3_bucket,
+            settings.jurisdiction_s3_key,
+            settings.jurisdiction_blocklist_path,
+        )
+        logger.info(
+            "uploaded to s3://%s/%s for the next instance to pull at startup",
+            settings.jurisdiction_s3_bucket, settings.jurisdiction_s3_key,
+        )
     return 0
 
 

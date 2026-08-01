@@ -34,6 +34,14 @@ class Settings:
     pending_dir: str = "/var/lib/ichnos/pending"
     publish_tmp_dir: str = "/var/lib/ichnos/publish-tmp"
 
+    # S3 persistence for the jurisdiction blocklist (empty = local-only, e.g. dev/test).
+    # Without this, a freshly-replaced instance starts with an EMPTY jurisdiction
+    # exclusion list until the next weekly refresh - up to a week of scanning without
+    # the JP/KP/KR/CN/RU/IR exclusion in effect. `scan` pulls this at startup if the
+    # local file is missing; `jurisdiction-refresh` pushes to it after every refresh.
+    jurisdiction_s3_bucket: str = ""
+    jurisdiction_s3_key: str = "jurisdiction/jurisdiction-blocklist.conf"
+
     # Throttle (design doc §4) - global budget shared across all enabled protocols
     rate_interval_seconds: float = 5.0
 
@@ -65,6 +73,8 @@ class Settings:
             ),
             pending_dir=_env("PENDING_DIR", cls.pending_dir),
             publish_tmp_dir=_env("PUBLISH_TMP_DIR", cls.publish_tmp_dir),
+            jurisdiction_s3_bucket=_env("JURISDICTION_S3_BUCKET", cls.jurisdiction_s3_bucket),
+            jurisdiction_s3_key=_env("JURISDICTION_S3_KEY", cls.jurisdiction_s3_key),
             rate_interval_seconds=_env_float("RATE_INTERVAL_SECONDS", cls.rate_interval_seconds),
             opteryx_workspace=_env("OPTERYX_WORKSPACE", cls.opteryx_workspace),
             opteryx_collection=_env("OPTERYX_COLLECTION", cls.opteryx_collection),
