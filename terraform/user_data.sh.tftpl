@@ -7,6 +7,27 @@ set -euxo pipefail
 
 exec > >(tee /var/log/ichnos-bootstrap.log) 2>&1
 
+# --- OS packages. AWS CLI is deliberately NOT installed via apt - Ubuntu 24.04
+# dropped the `awscli` package from its repos entirely (no installation candidate),
+# so this uses the official v2 installer instead, which has to come first since the
+# EIP association immediately below needs it. ---
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -y
+apt-get install -y \
+  python3-pip python3-venv \
+  zmap \
+  nginx \
+  certbot python3-certbot-dns-route53 \
+  golang-go \
+  git jq unzip openssl
+
+# aarch64 bundle - matches variables.tf's instance_type constraint ("must be arm64");
+# switch to awscli-exe-linux-x86_64.zip if that constraint ever changes.
+curl -s "https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip" -o /tmp/awscliv2.zip
+unzip -q /tmp/awscliv2.zip -d /tmp
+/tmp/aws/install
+rm -rf /tmp/awscliv2.zip /tmp/aws
+
 TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 60")
 INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
 
@@ -16,17 +37,6 @@ aws ec2 associate-address \
   --allocation-id "${eip_allocation_id}" \
   --region "${region}" \
   --allow-reassociation
-
-# --- OS packages ---
-export DEBIAN_FRONTEND=noninteractive
-apt-get update -y
-apt-get install -y \
-  python3-pip python3-venv \
-  zmap \
-  nginx \
-  certbot python3-certbot-dns-route53 \
-  golang-go \
-  git jq awscli openssl
 
 # --- zgrab2 (no root needed to run it, but building it does need Go) ---
 GOBIN=/usr/local/bin go install github.com/zmap/zgrab2/cmd/zgrab2@latest
