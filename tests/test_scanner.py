@@ -47,6 +47,35 @@ def test_probe_one_uses_the_real_zmap_blacklist_flag_not_blocklist():
     assert "--blocklist-file" not in calls[0]
 
 
+def test_probe_one_passes_gateway_mac_when_given():
+    # Real fix, not speculative: ZMap's own runtime ARP resolution of the gateway MAC
+    # turned out to be the actual cause of a run of hangs across hundreds of
+    # single-target invocations - confirmed by reproducing the hang and then fixing it
+    # live with exactly this flag. Resolved once (by the OS, not ZMap) and pinned here.
+    calls = []
+
+    def run_command(cmd, input=None):
+        calls.append(cmd)
+        return ""
+
+    probe_one(80, 12345, "/tmp/blocklist.conf", gateway_mac="aa:bb:cc:dd:ee:ff", run_command=run_command)
+
+    assert "--gateway-mac" in calls[0]
+    assert calls[0][calls[0].index("--gateway-mac") + 1] == "aa:bb:cc:dd:ee:ff"
+
+
+def test_probe_one_omits_gateway_mac_when_not_given():
+    calls = []
+
+    def run_command(cmd, input=None):
+        calls.append(cmd)
+        return ""
+
+    probe_one(80, 12345, "/tmp/blocklist.conf", run_command=run_command)
+
+    assert "--gateway-mac" not in calls[0]
+
+
 def test_grab_one_uses_the_zgrab2_blocklist_flag():
     # ZGrab2's actual flag is --blocklist-file (newer terminology) - the opposite of
     # ZMap's --blacklist-file above. Both are correct for their respective tools;
@@ -90,6 +119,29 @@ def test_default_run_command_times_out_rather_than_hanging_forever(caplog):
 
     assert output == ""
     assert any("timed out" in record.message for record in caplog.records)
+
+
+def test_run_scan_threads_gateway_mac_through_to_probe_one():
+    calls = []
+
+    def run_command(cmd, input=None):
+        if cmd[0] == "zmap":
+            calls.append(cmd)
+            return ""
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    store = InMemoryStore()
+    limiter = TokenBucket(0.001, burst=1)
+
+    run_scan(
+        scan_id="gw-test", protocol="http", port=80, zgrab2_module="http", seed=1,
+        candidate_count=2, blocklist_path="/tmp/x", rate_limiter=limiter,
+        current_state=store.current_state, run_command=run_command, clock=_fixed_clock(),
+        gateway_mac="11:22:33:44:55:66",
+    )
+
+    assert len(calls) == 2
+    assert all("--gateway-mac" in c and "11:22:33:44:55:66" in c for c in calls)
 
 
 def test_run_scan_records_observation_and_new_version_for_responsive_host():

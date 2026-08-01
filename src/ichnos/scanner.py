@@ -105,6 +105,7 @@ def probe_one(
     seed: int,
     blocklist_path: str,
     *,
+    gateway_mac: Optional[str] = None,
     run_command: CommandRunner = _default_run_command,
 ) -> Optional[str]:
     """One ZMap discovery probe against a single pseudorandom target. Returns the
@@ -116,21 +117,30 @@ def probe_one(
     assumed ZMap used too. `_default_run_command`'s check=False meant every call
     silently exited 1 with an empty stdout, indistinguishable from a real "no
     response" - meaning every random-candidate scan since deployment never actually
-    invoked ZMap at all. Found by manually running this exact command by hand."""
-    output = run_command(
-        [
-            "zmap",
-            "-p",
-            str(port),
-            "-n",
-            "1",
-            "--seed",
-            str(seed),
-            "--blacklist-file",
-            blocklist_path,
-        ],
-        None,
-    )
+    invoked ZMap at all. Found by manually running this exact command by hand.
+
+    `gateway_mac`, when given, skips ZMap's own runtime ARP resolution of the gateway
+    - without it, ZMap re-resolves the gateway's MAC via its own raw ARP query on
+    *every single invocation*, which is exactly the failure mode that turned out to be
+    the real explanation for a run of hangs that first looked like flaky infrastructure:
+    hundreds of single-target invocations each redoing raw ARP resolution from scratch,
+    instead of resolving it once (the OS's own ARP, via ordinary traffic, is far more
+    reliable) and pinning it. Confirmed directly: the exact same invocation that hung
+    indefinitely without this flag completed correctly in ~9s with it."""
+    cmd = [
+        "zmap",
+        "-p",
+        str(port),
+        "-n",
+        "1",
+        "--seed",
+        str(seed),
+        "--blacklist-file",
+        blocklist_path,
+    ]
+    if gateway_mac:
+        cmd.extend(["--gateway-mac", gateway_mac])
+    output = run_command(cmd, None)
     line = output.strip().splitlines()[0].strip() if output.strip() else ""
     return line or None
 
@@ -287,6 +297,7 @@ def run_scan(
     run_command: CommandRunner = _default_run_command,
     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     target_ip: Optional[str] = None,
+    gateway_mac: Optional[str] = None,
 ) -> ScanRunOutcome:
     """Run one scan: up to `candidate_count` single-target probes, throttled by
     `rate_limiter`, fingerprinting and dedupe-checking every responsive host.
@@ -343,7 +354,9 @@ def run_scan(
     for i in range(candidate_count):
         rate_limiter.wait()
         candidate_seed = derive_seed(seed, i)
-        ip = probe_one(port, candidate_seed, blocklist_path, run_command=run_command)
+        ip = probe_one(
+            port, candidate_seed, blocklist_path, gateway_mac=gateway_mac, run_command=run_command
+        )
         metadata.targets_attempted += 1
         responded = ip is not None
         outcome.candidates.append(

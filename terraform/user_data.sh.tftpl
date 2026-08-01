@@ -77,6 +77,18 @@ SECRET_JSON=$(aws secretsmanager get-secret-value --secret-id "${opteryx_pat_sec
 OPTERYX_CLIENT_ID=$(echo "$SECRET_JSON" | jq -r .client_id)
 OPTERYX_CLIENT_SECRET=$(echo "$SECRET_JSON" | jq -r .client_secret)
 
+# --- Resolve the gateway's MAC once, here, via the OS's own ARP - not ZMap's. Real
+# fix for a real incident: ZMap re-resolves the gateway MAC via its own raw ARP query
+# on every single-target invocation (this design makes hundreds of them), which turned
+# out to be genuinely unreliable at that volume and caused a run of indefinite hangs -
+# confirmed by reproducing it live and fixing it with exactly this flag. By this point
+# in boot, apt/go/pip have already generated plenty of outbound traffic through the
+# gateway, so the kernel's own ARP cache should already be warm; the ping is just a
+# belt-and-suspenders trigger in case it somehow isn't. ---
+GATEWAY_IP=$(ip route show default | awk '{print $3; exit}')
+ping -c 1 -W 2 "$GATEWAY_IP" > /dev/null 2>&1 || true
+GATEWAY_MAC=$(ip neigh show "$GATEWAY_IP" | awk '{print $5; exit}')
+
 mkdir -p /etc/ichnos
 cat > /etc/ichnos/env <<EOF
 AWS_DEFAULT_REGION=${region}
@@ -85,6 +97,7 @@ ICHNOS_SCHEDULE_TABLE=${schedule_table}
 ICHNOS_SCAN_METADATA_TABLE=${scan_metadata_table}
 ICHNOS_CURRENT_STATE_TABLE=${current_state_table}
 ICHNOS_RATE_INTERVAL_SECONDS=${rate_interval_seconds}
+ICHNOS_ZMAP_GATEWAY_MAC=$GATEWAY_MAC
 ICHNOS_OPTERYX_WORKSPACE=${opteryx_workspace}
 ICHNOS_OPTERYX_COLLECTION=${opteryx_collection}
 ICHNOS_OPTERYX_CLIENT_ID=$OPTERYX_CLIENT_ID

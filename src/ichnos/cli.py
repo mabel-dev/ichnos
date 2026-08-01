@@ -132,6 +132,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
         rate_limiter=rate_limiter,
         current_state=store.current_state,
         target_ip=args.target,
+        gateway_mac=settings.zmap_gateway_mac or None,
     )
     store.scan_metadata.put(outcome.metadata)
 

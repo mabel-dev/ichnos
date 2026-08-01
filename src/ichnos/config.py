@@ -45,6 +45,14 @@ class Settings:
     # Throttle (design doc §4) - global budget shared across all enabled protocols
     rate_interval_seconds: float = 5.0
 
+    # ZMap's own runtime gateway-MAC ARP resolution turned out to be unreliable across
+    # the hundreds of single-target invocations this design makes (see scanner.py's
+    # probe_one docstring) - resolved once at boot (the OS's own ARP, via ordinary
+    # traffic, not ZMap's raw one) and pinned here instead. Empty means "let ZMap
+    # resolve it itself" - only safe at very low invocation volume, not the real
+    # deployment's steady-state.
+    zmap_gateway_mac: str = ""
+
     # Opteryx publish target (design doc §3.2)
     opteryx_workspace: str = "ichnos"
     opteryx_collection: str = "landing"
@@ -76,6 +84,7 @@ class Settings:
             jurisdiction_s3_bucket=_env("JURISDICTION_S3_BUCKET", cls.jurisdiction_s3_bucket),
             jurisdiction_s3_key=_env("JURISDICTION_S3_KEY", cls.jurisdiction_s3_key),
             rate_interval_seconds=_env_float("RATE_INTERVAL_SECONDS", cls.rate_interval_seconds),
+            zmap_gateway_mac=_env("ZMAP_GATEWAY_MAC", cls.zmap_gateway_mac),
             opteryx_workspace=_env("OPTERYX_WORKSPACE", cls.opteryx_workspace),
             opteryx_collection=_env("OPTERYX_COLLECTION", cls.opteryx_collection),
             opteryx_client_id=_env("OPTERYX_CLIENT_ID", cls.opteryx_client_id),
