@@ -76,3 +76,25 @@ def write_blocklist_file(path: str, cidrs: Iterable[str]) -> None:
     with open(path, "w") as f:
         for cidr in cidrs:
             f.write(f"{cidr}\n")
+
+
+def read_blocklist_file(path: str) -> List[str]:
+    """The inverse of `write_blocklist_file` - used by anything that needs to check a
+    single address against the already-built blocklist (e.g. a deliberately-targeted
+    scan, see scanner.py's `target_ip`) rather than rebuilding it from scratch."""
+    try:
+        with open(path) as f:
+            return [line.strip() for line in f if line.strip()]
+    except FileNotFoundError:
+        return []
+
+
+def is_blocked(ip: str, cidrs: Iterable[str]) -> bool:
+    """Whether `ip` falls inside any of `cidrs`. Restrictions are enforced the same
+    way regardless of how a target was chosen - random draw or deliberately
+    specified - this is the one place that check happens."""
+    try:
+        address = ipaddress.ip_address(ip)
+    except ValueError:
+        return True  # not a valid address at all - treat as blocked, not as "allowed"
+    return any(address in ipaddress.ip_network(cidr, strict=False) for cidr in cidrs)

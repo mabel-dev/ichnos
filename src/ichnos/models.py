@@ -92,7 +92,10 @@ class Observation:
     port: int
     protocol: str
     response_status: str
-    fingerprint_id: str
+    # None when a host answered ZMap's discovery probe but ZGrab2 couldn't complete a
+    # grab (response_status="grab-failed") - there's no protocol payload to fingerprint,
+    # but the fact that *something* is listening on the port is itself worth recording.
+    fingerprint_id: Optional[str]
 
     def as_dict(self) -> Dict[str, Any]:
         return {

@@ -131,6 +131,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
         blocklist_path=settings.blocklist_path,
         rate_limiter=rate_limiter,
         current_state=store.current_state,
+        target_ip=args.target,
     )
     store.scan_metadata.put(outcome.metadata)
 
@@ -236,6 +237,14 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--protocol", required=True)
     scan.add_argument("--candidates", type=int, default=12)
     scan.add_argument("--seed", type=int, default=None)
+    scan.add_argument(
+        "--target",
+        default=None,
+        help=(
+            "scan this specific IP instead of random candidates (still blocklist-"
+            "checked) - for verifying the pipeline against a known-responsive host"
+        ),
+    )
     scan.add_argument("--store", choices=["dynamodb", "memory"], default="dynamodb")
     scan.set_defaults(func=cmd_scan)
 
