@@ -64,6 +64,7 @@ class PublishBatch:
     versions: List[Dict] = field(default_factory=list)
     protocol_rows: Dict[str, List[Dict]] = field(default_factory=dict)
     scan_metadata: List[Dict] = field(default_factory=list)
+    candidates: List[Dict] = field(default_factory=list)
 
     def add_scan_outcome(self, outcome: ScanRunOutcome) -> None:
         self.observations.extend(o.as_dict() for o in outcome.observations)
@@ -77,6 +78,7 @@ class PublishBatch:
                 }
             )
         self.scan_metadata.append(_scan_metadata_dict(outcome.metadata))
+        self.candidates.extend(c.as_dict() for c in outcome.candidates)
 
     def is_empty(self) -> bool:
         return not (
@@ -84,6 +86,7 @@ class PublishBatch:
             or self.versions
             or any(self.protocol_rows.values())
             or self.scan_metadata
+            or self.candidates
         )
 
     def datasets(self) -> Dict[str, List[Dict]]:
@@ -91,6 +94,7 @@ class PublishBatch:
             "observations": self.observations,
             "versions": self.versions,
             "scan_metadata": self.scan_metadata,
+            "candidates": self.candidates,
         }
         result.update(self.protocol_rows)
         return {name: rows for name, rows in result.items() if rows}

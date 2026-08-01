@@ -35,6 +35,7 @@ from typing import Tuple
 from .blocklist import is_blocked
 from .blocklist import read_blocklist_file
 from .fingerprint import fingerprint_id
+from .models import CandidateAttempt
 from .models import CurrentStateRecord
 from .models import Observation
 from .models import ScanMetadataRecord
@@ -154,6 +155,10 @@ class ScanRunOutcome:
     new_versions: List[Tuple[str, VersionRecord]] = field(default_factory=list)
     """(protocol, VersionRecord) pairs - kept per-protocol since a run can, in
     principle, cover more than one dataset."""
+    candidates: List[CandidateAttempt] = field(default_factory=list)
+    """Every random-discovery candidate slot attempted, responded or not - see
+    CandidateAttempt's docstring. Not populated by the `target_ip` path, which by
+    definition always knows exactly what it attempted."""
 
 
 def _grab_and_record(
@@ -321,7 +326,18 @@ def run_scan(
         candidate_seed = derive_seed(seed, i)
         ip = probe_one(port, candidate_seed, blocklist_path, run_command=run_command)
         metadata.targets_attempted += 1
-        if ip is None:
+        responded = ip is not None
+        outcome.candidates.append(
+            CandidateAttempt(
+                scan_id=scan_id,
+                attempted_at=clock(),
+                protocol=protocol,
+                port=port,
+                seed=candidate_seed,
+                responded=responded,
+            )
+        )
+        if not responded:
             logger.info(
                 "scan %s [%d/%d] seed=%d: no response", scan_id, i + 1, candidate_count,
                 candidate_seed,

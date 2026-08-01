@@ -110,6 +110,9 @@ def test_run_scan_records_observation_and_new_version_for_responsive_host():
     assert outcome.observations[0].fingerprint_id
     assert len(outcome.new_versions) == 1
     assert outcome.new_versions[0][0] == "http"
+    # a CandidateAttempt for every one of the 3 candidates, not just the responsive one
+    assert len(outcome.candidates) == 3
+    assert sum(c.responded for c in outcome.candidates) == 1
 
 
 def test_run_scan_dedupes_unchanged_fingerprint_on_rerun():
@@ -153,6 +156,12 @@ def test_run_scan_no_responsive_hosts():
     assert outcome.metadata.hosts_responsive == 0
     assert outcome.observations == []
     assert outcome.new_versions == []
+    # this is exactly the case the Candidates dataset exists for: 5 real attempts,
+    # 0 responses - a distinguishable, countable signal, not silence indistinguishable
+    # from "this scan never ran".
+    assert len(outcome.candidates) == 5
+    assert all(c.responded is False for c in outcome.candidates)
+    assert len({c.seed for c in outcome.candidates}) == 5  # every candidate distinct
 
 
 def test_run_scan_records_grab_failed_when_zgrab2_produces_nothing():

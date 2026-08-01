@@ -110,6 +110,39 @@ class Observation:
 
 
 @dataclass(frozen=True)
+class CandidateAttempt:
+    """One row of the Candidates dataset - a durable record that a specific candidate
+    *slot* was attempted during discovery, whether or not it ever responded.
+
+    Deliberately keyed by `seed`, not a resolved IP: ZMap's discovery step only tells
+    us the address when something answers - there's no cheap, safe way to resolve what
+    a given seed maps to without either sending a real probe or reimplementing ZMap's
+    permutation algorithm ourselves. `(protocol, port, seed)` is still a durable,
+    reproducible identifier for "this exact candidate was tried" - the same seed always
+    resolves to the same real address if that mapping is ever needed later. This is
+    what makes "500 attempts, 0 responses" a real, countable signal distinct from
+    "never attempted" - the gap this dataset exists to close.
+    """
+
+    scan_id: str
+    attempted_at: datetime
+    protocol: str
+    port: int
+    seed: int
+    responded: bool
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "scan_id": self.scan_id,
+            "attempted_at": self.attempted_at.isoformat(),
+            "protocol": self.protocol,
+            "port": self.port,
+            "seed": self.seed,
+            "responded": self.responded,
+        }
+
+
+@dataclass(frozen=True)
 class VersionRecord:
     """One row of the Versions analytical dataset - an immutable, new fingerprint."""
 

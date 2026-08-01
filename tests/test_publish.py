@@ -1,13 +1,19 @@
 import os
+from datetime import datetime
+from datetime import timezone
 from types import SimpleNamespace
 
 from opteryx_upload import ConflictResolution
 
+from ichnos.models import CandidateAttempt
+from ichnos.models import ScanMetadataRecord
+from ichnos.publish import PublishBatch
 from ichnos.publish import PublishError
 from ichnos.publish import append_ndjson
 from ichnos.publish import clear_pending
 from ichnos.publish import publish_hour
 from ichnos.publish import read_pending_datasets
+from ichnos.scanner import ScanRunOutcome
 
 
 def fake_convert(ndjson_path, parquet_path):
@@ -48,6 +54,32 @@ class FakeClient:
         session = FakeSession(fail_dataset=self._fail_dataset)
         self.sessions.append(session)
         return session
+
+
+def test_publish_batch_includes_candidates_dataset():
+    outcome = ScanRunOutcome(
+        metadata=ScanMetadataRecord(
+            scan_id="s1", protocol="http", started_at=datetime.now(timezone.utc)
+        ),
+        candidates=[
+            CandidateAttempt(
+                scan_id="s1", attempted_at=datetime.now(timezone.utc), protocol="http",
+                port=80, seed=111, responded=False,
+            ),
+            CandidateAttempt(
+                scan_id="s1", attempted_at=datetime.now(timezone.utc), protocol="http",
+                port=80, seed=222, responded=True,
+            ),
+        ],
+    )
+    batch = PublishBatch()
+    batch.add_scan_outcome(outcome)
+
+    datasets = batch.datasets()
+    assert "candidates" in datasets
+    assert len(datasets["candidates"]) == 2
+    assert {row["seed"] for row in datasets["candidates"]} == {111, 222}
+    assert not batch.is_empty()
 
 
 def test_publish_hour_commits_every_nonempty_dataset(tmp_path):
