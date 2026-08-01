@@ -1,4 +1,7 @@
+import os
+
 from ichnos.blocklist import build_blocklist
+from ichnos.blocklist import write_blocklist_file
 
 
 def test_includes_bogons_by_default():
@@ -27,3 +30,11 @@ def test_overlapping_entries_are_collapsed():
     # merge them rather than keeping a redundant /32 alongside the /24.
     assert "203.0.113.0/24" in cidrs
     assert "203.0.113.5/32" not in cidrs
+
+
+def test_write_blocklist_file_creates_parent_directory(tmp_path):
+    path = str(tmp_path / "nested" / "does" / "not" / "exist" / "blocklist.conf")
+    write_blocklist_file(path, ["10.0.0.0/8"])
+    assert os.path.exists(path)
+    with open(path) as f:
+        assert f.read() == "10.0.0.0/8\n"

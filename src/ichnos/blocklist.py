@@ -10,6 +10,7 @@ Three layers are merged, in this order, before every single scan run:
 from __future__ import annotations
 
 import ipaddress
+import os
 from typing import Iterable
 from typing import List
 from typing import Union
@@ -71,6 +72,7 @@ def build_blocklist(
 
 def write_blocklist_file(path: str, cidrs: Iterable[str]) -> None:
     """Write in ZMap's `--blocklist-file` format: one CIDR per line."""
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "w") as f:
         for cidr in cidrs:
             f.write(f"{cidr}\n")
