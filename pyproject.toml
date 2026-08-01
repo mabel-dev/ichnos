@@ -12,6 +12,7 @@ license = { text = "MIT" }
 dependencies = [
     "requests>=2.34.2,<3",
     "opteryx-upload>=0.2.0",
+    "rugo",
     "fastapi>=0.110",
     "uvicorn>=0.27",
     "python-multipart>=0.0.9",

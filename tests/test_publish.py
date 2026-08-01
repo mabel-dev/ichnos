@@ -10,6 +10,13 @@ from ichnos.publish import publish_hour
 from ichnos.publish import read_pending_datasets
 
 
+def fake_convert(ndjson_path, parquet_path):
+    """Stand-in for rugo - the real binary isn't available in the test environment,
+    and these tests care about the upload/commit flow, not the conversion itself."""
+    with open(parquet_path, "w") as f:
+        f.write("")
+
+
 class FakeSession:
     def __init__(self, fail_dataset=None):
         self.uploaded = []
@@ -51,10 +58,13 @@ def test_publish_hour_commits_every_nonempty_dataset(tmp_path):
         "empty_dataset": [],
     }
     results = publish_hour(
-        client, datasets, workspace="scan", collection="measurement", tmp_dir=str(tmp_path)
+        client, datasets, workspace="scan", collection="measurement", tmp_dir=str(tmp_path),
+        convert=fake_convert,
     )
     assert set(results.keys()) == {"observations", "versions"}
-    assert os.path.exists(tmp_path / "observations.ndjson")
+    assert os.path.exists(tmp_path / "observations.ndjson")  # staged NDJSON still written
+    assert os.path.exists(tmp_path / "observations.parquet")  # and converted before upload
+    assert client.sessions[0].uploaded[0].endswith(".parquet")
     assert not os.path.exists(tmp_path / "empty_dataset.ndjson")
     assert client.sessions[0].committed_target.workspace == "scan"
     assert client.sessions[0].committed_target.collection == "measurement"
@@ -65,7 +75,8 @@ def test_publish_hour_raises_and_stops_on_inspect_issues(tmp_path):
     datasets = {"observations": [{"ip": "1.2.3.4"}], "versions": [{"fingerprint_id": "abc"}]}
     try:
         publish_hour(
-            client, datasets, workspace="scan", collection="measurement", tmp_dir=str(tmp_path)
+            client, datasets, workspace="scan", collection="measurement", tmp_dir=str(tmp_path),
+            convert=fake_convert,
         )
         raise AssertionError("expected PublishError")
     except PublishError as exc:

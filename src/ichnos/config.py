@@ -46,8 +46,8 @@ class Settings:
     rate_interval_seconds: float = 5.0
 
     # Opteryx publish target (design doc §3.2)
-    opteryx_workspace: str = "scan"
-    opteryx_collection: str = "measurement"
+    opteryx_workspace: str = "ichnos"
+    opteryx_collection: str = "landing"
     opteryx_client_id: str = ""
     opteryx_client_secret: str = ""
 

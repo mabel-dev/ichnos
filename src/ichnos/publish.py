@@ -1,10 +1,13 @@
 """Hourly batch publish to Opteryx via the `opteryx-upload` public API (design doc §3.2).
 
 The worker never touches Opteryx internals - it only calls the same Upload Service
-surface any external Opteryx customer uses: create a session, stage NDJSON parts,
-`inspect()`, then `commit(conflict_resolution=APPEND)`. At MVP volume (throttled to
-~1 request/5s, design doc §4) a batch is at most a few hundred rows per dataset -
-trivially under the upload client's ~30MB auto-split threshold.
+surface any external Opteryx customer uses: create a session, stage a part,
+`inspect()`, then `commit(conflict_resolution=APPEND)`. Rows are staged as NDJSON
+locally (simple to append to incrementally, see `append_ndjson`) but converted to
+Parquet via `rugo` (parquet.py) before upload - Opteryx is a relational, Parquet-backed
+engine, and Parquet is the documented, recommended format for regular batch loads, not
+just NDJSON's convenience-path auto-splitting. At MVP volume (throttled to ~1
+request/5s, design doc §4) a batch is at most a few hundred rows per dataset either way.
 
 Failure handling is the caller's responsibility, deliberately: `publish_hour` raises on
 the first failed dataset rather than partially committing and swallowing the rest, and
@@ -28,6 +31,7 @@ from opteryx_upload import ConflictResolution
 from opteryx_upload import Target
 from opteryx_upload import UploadClient
 
+from .parquet import convert_to_parquet
 from .scanner import ScanRunOutcome
 
 
@@ -150,6 +154,7 @@ def publish_hour(
     workspace: str,
     collection: str,
     tmp_dir: str,
+    convert=convert_to_parquet,
 ) -> Dict[str, CommitResult]:
     """Commit every non-empty dataset. Raises `PublishError` on the first dataset the
     Upload Service flags via `inspect()` - callers should treat any exception here as
@@ -161,11 +166,13 @@ def publish_hour(
     for dataset, rows in datasets.items():
         if not rows:
             continue
-        path = os.path.join(tmp_dir, f"{dataset}.ndjson")
-        write_ndjson(path, rows)
+        ndjson_path = os.path.join(tmp_dir, f"{dataset}.ndjson")
+        write_ndjson(ndjson_path, rows)
+        parquet_path = os.path.join(tmp_dir, f"{dataset}.parquet")
+        convert(ndjson_path, parquet_path)
 
         session = client.create_session()
-        session.upload_file(path)
+        session.upload_file(parquet_path)
         inspect_result = session.inspect()
         if inspect_result is not None and inspect_result.has_issues:
             raise PublishError(dataset, inspect_result.issues)

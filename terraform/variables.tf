@@ -36,13 +36,13 @@ variable "organisation_name" {
 variable "opteryx_workspace" {
   description = "Opteryx Upload Service workspace this project publishes into."
   type        = string
-  default     = "scan"
+  default     = "ichnos"
 }
 
 variable "opteryx_collection" {
-  description = "Opteryx Upload Service collection this project publishes into."
+  description = "Opteryx Upload Service collection this project publishes into - a landing zone for raw ingested data, upstream of any curated/refined collections."
   type        = string
-  default     = "measurement"
+  default     = "landing"
 }
 
 variable "rate_interval_seconds" {
