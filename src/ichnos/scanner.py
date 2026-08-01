@@ -179,7 +179,12 @@ def _grab_and_record(
         return
 
     metadata.hosts_responsive += 1
-    payload = normalize(protocol, module_result)
+    # normalize() dispatches on the zgrab2 *module* ("http"/"tls"), not the schedule's
+    # human-facing protocol label ("http"/"https") - they coincide for HTTP but not
+    # HTTPS, which is registered under zgrab2_module="tls" (see ScheduleEntry). Passing
+    # `protocol` here was a real bug, invisible until the first HTTPS grab actually
+    # succeeded (no live target had gotten this far before).
+    payload = normalize(zgrab2_module, module_result)
     fp_id = fingerprint_id(payload)
 
     current = current_state.get(protocol, ip, port)

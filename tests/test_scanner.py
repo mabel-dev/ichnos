@@ -166,6 +166,48 @@ def test_run_scan_target_ip_skips_discovery_and_grabs_directly():
     assert len(outcome.new_versions) == 1
 
 
+def test_run_scan_normalizes_by_zgrab2_module_not_protocol_label():
+    # protocol="https" is the schedule's human-facing label (and the dataset name
+    # results get published under) - the zgrab2 *module* for HTTPS is "tls", and
+    # normalize() must dispatch on that, not on `protocol`. Regression test for a real
+    # bug: this coincided for HTTP (module also "http") so nothing caught it until the
+    # first live HTTPS grab actually succeeded against a real target.
+    zgrab_result = {
+        "data": {
+            "tls": {
+                "result": {
+                    "handshake_log": {
+                        "server_hello": {"version": {"name": "TLSv1.3"}},
+                    }
+                }
+            }
+        }
+    }
+
+    def run_command(cmd, input=None):
+        if cmd[0] == "zgrab2":
+            assert cmd[1] == "tls"
+            return json.dumps(zgrab_result) + "\n"
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    store = InMemoryStore()
+    limiter = TokenBucket(0.001, burst=1)
+
+    outcome = run_scan(
+        scan_id="https-test", protocol="https", port=443, zgrab2_module="tls", seed=1,
+        candidate_count=1, blocklist_path="/tmp/x", rate_limiter=limiter,
+        current_state=store.current_state, run_command=run_command, clock=_fixed_clock(),
+        target_ip="1.1.1.1",
+    )
+
+    assert outcome.metadata.hosts_responsive == 1
+    assert len(outcome.observations) == 1
+    assert outcome.observations[0].response_status == "success"
+    assert len(outcome.new_versions) == 1
+    assert outcome.new_versions[0][0] == "https"  # dataset name still the protocol label
+    assert outcome.new_versions[0][1].payload["version"] == "TLSv1.3"
+
+
 def test_run_scan_target_ip_refuses_a_blocklisted_target(tmp_path):
     blocklist_path = str(tmp_path / "blocklist.conf")
     with open(blocklist_path, "w") as f:
