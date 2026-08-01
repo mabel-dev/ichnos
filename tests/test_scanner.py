@@ -78,6 +78,20 @@ def test_default_run_command_silent_on_success():
     assert output.strip() == "hello"
 
 
+def test_default_run_command_times_out_rather_than_hanging_forever(caplog):
+    # Regression test for a real production incident: a specific target reliably
+    # caused a plain `zmap -n 1` invocation to hang indefinitely, blocking two
+    # concurrently-running cron-triggered scans until manually killed. A hung command
+    # must degrade to a recorded failure within a bounded time, never block forever.
+    import logging
+
+    with caplog.at_level(logging.ERROR, logger="ichnos.scanner"):
+        output = _default_run_command(["sleep", "5"], timeout=0.2)
+
+    assert output == ""
+    assert any("timed out" in record.message for record in caplog.records)
+
+
 def test_run_scan_records_observation_and_new_version_for_responsive_host():
     base_seed = 42
     responsive_seed = str(derive_seed(base_seed, 0))

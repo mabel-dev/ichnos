@@ -50,14 +50,33 @@ logger = get_logger(__name__)
 CommandRunner = Callable[[List[str], Optional[str]], str]
 
 
-def _default_run_command(cmd: List[str], input: Optional[str] = None) -> str:
-    result = subprocess.run(
-        cmd,
-        input=input,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+DEFAULT_COMMAND_TIMEOUT_SECONDS = 30
+"""Well past ZMap's own default 8s cooldown and ZGrab2's normal sub-second handshake -
+generous, but bounded. Observed for real in production: a specific target reliably
+caused a plain `zmap -n 1` invocation to hang far past that, blocking two concurrently
+running cron-triggered scans (http and https both hung on the same candidate, since
+both default to the same seed-of-the-day) until manually killed. A hung external tool
+must never be able to stall a scan - and by extension an entire cron slot -
+indefinitely; one bad target should cost at most this many seconds, then degrade to a
+recorded failure like any other, not hold everything hostage."""
+
+
+def _default_run_command(
+    cmd: List[str], input: Optional[str] = None, *, timeout: float = DEFAULT_COMMAND_TIMEOUT_SECONDS
+) -> str:
+    try:
+        result = subprocess.run(
+            cmd,
+            input=input,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        logger.error("command timed out after %gs: %s", timeout, " ".join(cmd))
+        return ""
+
     if result.returncode != 0:
         # A non-zero exit means the tool itself failed to run (bad flag, crash,
         # missing binary) - this must never look identical to "ran fine, found
