@@ -164,6 +164,7 @@ def cmd_publish(args: argparse.Namespace) -> int:
 
     from opteryx_upload import PATAuthenticator
     from opteryx_upload import UploadClient
+    from opteryx_upload import UploadClientError
 
     auth = PATAuthenticator(
         client_id=settings.opteryx_client_id, client_secret=settings.opteryx_client_secret
@@ -180,6 +181,18 @@ def cmd_publish(args: argparse.Namespace) -> int:
         )
     except PublishError as exc:
         logger.error("publish failed, leaving pending files in place for retry: %s", exc)
+        return 1
+    except UploadClientError as exc:
+        # Covers everything else the Upload Service can reject a commit for (auth,
+        # authorization, conflicts, size limits, its own transient failures) - all of
+        # them get the same treatment as PublishError above: log it, leave the pending
+        # files in place, let the next hourly cron retry rather than crash with a raw
+        # traceback and silently lose nothing (files are untouched either way) but say
+        # nothing useful about what happened.
+        logger.error(
+            "publish failed (%s), leaving pending files in place for retry: %s",
+            type(exc).__name__, exc,
+        )
         return 1
 
     clear_pending(settings.pending_dir, list(datasets.keys()))
