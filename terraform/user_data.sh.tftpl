@@ -43,15 +43,34 @@ aws ec2 associate-address \
   --region "${region}" \
   --allow-reassociation
 
-# --- zgrab2 (no root needed to run it, but building it does need Go) ---
-GOBIN=/usr/local/bin go install github.com/zmap/zgrab2/cmd/zgrab2@latest
+# --- zgrab2 (no root needed to run it, but building it does need Go). zgrab2's go.mod
+# requires a newer toolchain than apt's golang-go ships, so this also downloads that
+# toolchain over the network - retried a few times since a transient connection reset
+# there shouldn't cost an entire instance replacement cycle to recover from. ---
+for attempt in 1 2 3; do
+  if GOBIN=/usr/local/bin go install github.com/zmap/zgrab2/cmd/zgrab2@latest; then
+    break
+  fi
+  echo "go install zgrab2 attempt $attempt failed, retrying in 15s..."
+  sleep 15
+done
+test -x /usr/local/bin/zgrab2 # fail loudly (set -e) if all attempts were exhausted
 mkdir -p /root/.config/zgrab2 /home/ubuntu/.config/zgrab2 2>/dev/null || true
 touch /root/.config/zgrab2/blocklist.conf
 
-# --- ichnos itself, from source (not yet published to PyPI) ---
+# --- ichnos itself, from source (not yet published to PyPI) - retried for the same
+# reason as zgrab2's build above: a transient network blip shouldn't cost a full
+# instance replacement cycle. ---
 python3 -m venv /opt/ichnos-venv
 /opt/ichnos-venv/bin/pip install --upgrade pip
-/opt/ichnos-venv/bin/pip install "ichnos[aws] @ git+${ichnos_git_url}@${ichnos_git_ref}"
+for attempt in 1 2 3; do
+  if /opt/ichnos-venv/bin/pip install "ichnos[aws] @ git+${ichnos_git_url}@${ichnos_git_ref}"; then
+    break
+  fi
+  echo "pip install ichnos attempt $attempt failed, retrying in 15s..."
+  sleep 15
+done
+/opt/ichnos-venv/bin/python3 -c "import ichnos" # fail loudly if all attempts were exhausted
 
 # --- Config: fetch the Opteryx PAT from Secrets Manager, write env file (0600) ---
 SECRET_JSON=$(aws secretsmanager get-secret-value --secret-id "${opteryx_pat_secret_arn}" --region "${region}" --query SecretString --output text)
