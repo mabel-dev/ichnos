@@ -3,6 +3,7 @@ from datetime import datetime
 from datetime import timezone
 
 from ichnos.ratelimit import TokenBucket
+from ichnos.scanner import DEFAULT_ZMAP_COOLDOWN_SECONDS
 from ichnos.scanner import _default_run_command
 from ichnos.scanner import derive_seed
 from ichnos.scanner import grab_one
@@ -74,6 +75,37 @@ def test_probe_one_omits_gateway_mac_when_not_given():
     probe_one(80, 12345, "/tmp/blocklist.conf", run_command=run_command)
 
     assert "--gateway-mac" not in calls[0]
+
+
+def test_probe_one_uses_the_reduced_default_cooldown():
+    # Empirically measured, not arbitrary: ZMap's own default (8s) is sized for a full
+    # campaign and, applied per single-target invocation hundreds of times an hour,
+    # dominates the intended rate-limit interval entirely. 3s was chosen after
+    # confirming (3 trials each, against a known-responsive target) that 1s
+    # consistently produced false negatives and 2s consistently did not - 3s adds a
+    # margin above that measured minimum.
+    calls = []
+
+    def run_command(cmd, input=None):
+        calls.append(cmd)
+        return ""
+
+    probe_one(80, 12345, "/tmp/blocklist.conf", run_command=run_command)
+
+    assert "--cooldown-time" in calls[0]
+    assert calls[0][calls[0].index("--cooldown-time") + 1] == str(DEFAULT_ZMAP_COOLDOWN_SECONDS)
+
+
+def test_probe_one_cooldown_is_overridable():
+    calls = []
+
+    def run_command(cmd, input=None):
+        calls.append(cmd)
+        return ""
+
+    probe_one(80, 12345, "/tmp/blocklist.conf", cooldown_seconds=5, run_command=run_command)
+
+    assert calls[0][calls[0].index("--cooldown-time") + 1] == "5"
 
 
 def test_grab_one_uses_the_zgrab2_blocklist_flag():

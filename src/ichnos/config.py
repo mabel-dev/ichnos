@@ -20,6 +20,11 @@ def _env_float(name: str, default: float) -> float:
     return float(value) if value is not None else default
 
 
+def _env_int(name: str, default: int) -> int:
+    value = os.environ.get(f"ICHNOS_{name}")
+    return int(value) if value is not None else default
+
+
 @dataclass(frozen=True)
 class Settings:
     # DynamoDB table names (design doc §3.1)
@@ -53,6 +58,11 @@ class Settings:
     # deployment's steady-state.
     zmap_gateway_mac: str = ""
 
+    # ZMap's own default (8s) is sized for one large campaign, not the hundreds of
+    # separate single-target invocations this design makes - see scanner.py's
+    # DEFAULT_ZMAP_COOLDOWN_SECONDS for the measurements behind this default.
+    zmap_cooldown_seconds: int = 3
+
     # Opteryx publish target (design doc §3.2)
     opteryx_workspace: str = "ichnos"
     opteryx_collection: str = "landing"
@@ -85,6 +95,7 @@ class Settings:
             jurisdiction_s3_key=_env("JURISDICTION_S3_KEY", cls.jurisdiction_s3_key),
             rate_interval_seconds=_env_float("RATE_INTERVAL_SECONDS", cls.rate_interval_seconds),
             zmap_gateway_mac=_env("ZMAP_GATEWAY_MAC", cls.zmap_gateway_mac),
+            zmap_cooldown_seconds=_env_int("ZMAP_COOLDOWN_SECONDS", cls.zmap_cooldown_seconds),
             opteryx_workspace=_env("OPTERYX_WORKSPACE", cls.opteryx_workspace),
             opteryx_collection=_env("OPTERYX_COLLECTION", cls.opteryx_collection),
             opteryx_client_id=_env("OPTERYX_CLIENT_ID", cls.opteryx_client_id),

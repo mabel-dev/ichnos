@@ -100,12 +100,26 @@ def derive_seed(base_seed: int, index: int) -> int:
     return (base_seed * 1_000_003 + index + 1) & 0xFFFFFFFF
 
 
+DEFAULT_ZMAP_COOLDOWN_SECONDS = 3
+"""ZMap's own default (8s) is sized for a normal campaign - thousands to millions of
+targets in one invocation, where an 8s tail wait to catch stragglers is negligible
+against total runtime. This design instead makes hundreds of separate *single-target*
+invocations, each paying that fixed cost individually - at the default, ~9s per
+candidate regardless of response, dominating over the intended 5s rate-limit interval
+entirely. Empirically tested against a known-responsive target (3 trials each):
+cooldown=1 consistently missed the response (false negative - unacceptable, this
+exists to keep "no response" trustworthy); cooldown=2 consistently caught it. 3s adds
+a margin above that measured minimum for targets slower to respond than a nearby
+anycast edge, while still cutting the default's per-candidate overhead roughly in half."""
+
+
 def probe_one(
     port: int,
     seed: int,
     blocklist_path: str,
     *,
     gateway_mac: Optional[str] = None,
+    cooldown_seconds: int = DEFAULT_ZMAP_COOLDOWN_SECONDS,
     run_command: CommandRunner = _default_run_command,
 ) -> Optional[str]:
     """One ZMap discovery probe against a single pseudorandom target. Returns the
@@ -126,7 +140,10 @@ def probe_one(
     hundreds of single-target invocations each redoing raw ARP resolution from scratch,
     instead of resolving it once (the OS's own ARP, via ordinary traffic, is far more
     reliable) and pinning it. Confirmed directly: the exact same invocation that hung
-    indefinitely without this flag completed correctly in ~9s with it."""
+    indefinitely without this flag completed correctly in ~9s with it.
+
+    `cooldown_seconds` overrides ZMap's own campaign-oriented default - see
+    DEFAULT_ZMAP_COOLDOWN_SECONDS above for why and the measurements behind the value."""
     cmd = [
         "zmap",
         "-p",
@@ -137,6 +154,8 @@ def probe_one(
         str(seed),
         "--blacklist-file",
         blocklist_path,
+        "--cooldown-time",
+        str(cooldown_seconds),
     ]
     if gateway_mac:
         cmd.extend(["--gateway-mac", gateway_mac])
@@ -298,6 +317,7 @@ def run_scan(
     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     target_ip: Optional[str] = None,
     gateway_mac: Optional[str] = None,
+    cooldown_seconds: int = DEFAULT_ZMAP_COOLDOWN_SECONDS,
 ) -> ScanRunOutcome:
     """Run one scan: up to `candidate_count` single-target probes, throttled by
     `rate_limiter`, fingerprinting and dedupe-checking every responsive host.
@@ -355,7 +375,8 @@ def run_scan(
         rate_limiter.wait()
         candidate_seed = derive_seed(seed, i)
         ip = probe_one(
-            port, candidate_seed, blocklist_path, gateway_mac=gateway_mac, run_command=run_command
+            port, candidate_seed, blocklist_path, gateway_mac=gateway_mac,
+            cooldown_seconds=cooldown_seconds, run_command=run_command,
         )
         metadata.targets_attempted += 1
         responded = ip is not None

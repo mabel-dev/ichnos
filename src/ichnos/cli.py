@@ -133,6 +133,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
         current_state=store.current_state,
         target_ip=args.target,
         gateway_mac=settings.zmap_gateway_mac or None,
+        cooldown_seconds=settings.zmap_cooldown_seconds,
     )
     store.scan_metadata.put(outcome.metadata)
 
