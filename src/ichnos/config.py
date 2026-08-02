@@ -65,8 +65,12 @@ class Settings:
     # ZMap's own native discovery throttle (`--rate`, whole packets/second only - it
     # rejects fractional values outright). Replaces this project's earlier approach of
     # externally pacing repeated single-target ZMap invocations with our own rate
-    # limiter - see scanner.py's module docstring.
-    zmap_rate_pps: int = 1
+    # limiter - see scanner.py's module docstring. Started at 1pps (ZMap's practical
+    # floor) deliberately, to observe real production behaviour before committing to
+    # anything faster; raised to 2pps once that observation period showed a low,
+    # stable hit rate (~0.3-0.6% new fingerprints per candidate) and no operational
+    # issues at 1pps - a data-driven increase, not a re-guess.
+    zmap_rate_pps: int = 2
 
     # Opteryx publish target (design doc §3.2)
     opteryx_workspace: str = "ichnos"

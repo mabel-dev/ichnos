@@ -12,11 +12,12 @@ trail. ZGrab2 remains the fingerprinting tool, invoked per responsive address as
 stream reports them.
 
 Rate is expressed in whole packets/second (`--rate` doesn't accept fractional values -
-confirmed against the real binary, not assumed) - 1 pps is the practical floor. That's a
-looser throttle than this project's original "one request per 5 seconds" MVP figure, but
-that figure was our own conservatism, not a hard requirement; 1 pps is still a
-deliberately gentle rate and, more importantly, it's ZMap's real native minimum rather
-than something approximated by wrapping repeated invocations in delays.
+confirmed against the real binary, not assumed) - 1 pps is the practical floor. Deployed
+at 1pps first, deliberately, to observe real production behaviour before going any
+faster; raised to 2pps (see config.py's zmap_rate_pps) once that observation period
+showed a low, stable hit rate and no operational issues - a data-driven increase, not a
+re-guess. Both are far looser than this project's original "one request per 5 seconds"
+MVP figure, which was our own conservatism, not a hard requirement.
 
 Running this for real requires the `zmap` and `zgrab2` binaries installed and zmap
 running with raw-socket privileges (root, or `cap_net_raw+eip` on the binary) - not
