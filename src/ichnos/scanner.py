@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import tempfile
 import threading
 from dataclasses import dataclass
 from dataclasses import field
@@ -272,6 +273,16 @@ def _stream_discover_and_grab(
     ZMap's own `--metadata-file` - simpler and accurate for the normal case (ZMap
     completes what it was asked to attempt); the command's own 30s-per-grab timeout and
     error logging already surface a genuine early-exit failure separately.
+
+    ZMap's stderr is captured to a temp file (not a pipe - a pipe risks deadlock if
+    ZMap ever writes enough to fill the OS pipe buffer while we're only draining
+    stdout) and its exit code is checked once it's gone. Real, previously-undetected
+    gap: a scan that completed metadata.status="completed" with 1600 attempted, 0
+    responsive, in ~20ms instead of the expected ~800s turned out to be ZMap itself
+    exiting immediately (plausibly a raw-socket/pcap conflict with another concurrent
+    zmap invocation) - completely indistinguishable from "legitimately scanned 1600
+    addresses and found nothing" until stderr was actually looked at. `stderr=DEVNULL`
+    made that failure mode silent.
     """
     cmd = [
         "zmap",
@@ -299,7 +310,8 @@ def _stream_discover_and_grab(
     expected_runtime = max_targets / rate_pps + cooldown_seconds
     watchdog_seconds = expected_runtime * 2 + 30
 
-    proc = popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    stderr_file = tempfile.TemporaryFile(mode="w+")
+    proc = popen(cmd, stdout=subprocess.PIPE, stderr=stderr_file, text=True)
     watchdog = threading.Timer(watchdog_seconds, proc.kill)
     watchdog.start()
     try:
@@ -354,6 +366,17 @@ def _stream_discover_and_grab(
             )
             proc.kill()
             proc.wait()
+
+        if proc.returncode != 0:
+            stderr_file.seek(0)
+            stderr_output = stderr_file.read().strip()
+            logger.error(
+                "scan %s: ZMap discovery exited with code %d - results are NOT reliable "
+                "(targets_attempted/hosts_responsive do not reflect a real scan): %s",
+                scan_id, proc.returncode, stderr_output or "(no stderr output)",
+            )
+            metadata.status = "failed"
+        stderr_file.close()
 
 
 def run_scan(
@@ -426,7 +449,10 @@ def run_scan(
     )
 
     metadata.ended_at = clock()
-    metadata.status = "completed"
+    # _stream_discover_and_grab may already have set "failed" if ZMap itself exited
+    # non-zero - don't paper over that by unconditionally stamping "completed".
+    if metadata.status != "failed":
+        metadata.status = "completed"
     return outcome
 
 

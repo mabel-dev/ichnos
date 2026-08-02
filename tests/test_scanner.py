@@ -24,22 +24,31 @@ class _FakeProcess:
     already-decided lines, plus the poll/kill/wait surface run_scan's watchdog and
     exit-grace logic use. `exits_on_its_own=False` simulates a process that's genuinely
     still running once its stdout has EOF'd - `wait()` raises TimeoutExpired (matching
-    real subprocess.Popen) until `kill()` is called, same as a real hung process would."""
+    real subprocess.Popen) until `kill()` is called, same as a real hung process would.
+    `exit_code` simulates ZMap itself exiting non-zero (e.g. a real raw-socket
+    conflict) - `.returncode` only becomes accurate once wait()/poll() has resolved
+    the process, matching real subprocess.Popen semantics."""
 
-    def __init__(self, lines, exits_on_its_own=True):
+    def __init__(self, lines, exits_on_its_own=True, exit_code=0):
         self.stdout = iter(lines)
         self.killed = False
+        self.returncode = None
         self._exits_on_its_own = exits_on_its_own
+        self._exit_code = exit_code
 
     def poll(self):
-        return 0 if (self._exits_on_its_own or self.killed) else None
+        if self._exits_on_its_own or self.killed:
+            self.returncode = self._exit_code
+            return self.returncode
+        return None
 
     def kill(self):
         self.killed = True
 
     def wait(self, timeout=None):
         if self._exits_on_its_own or self.killed:
-            return 0
+            self.returncode = self._exit_code
+            return self.returncode
         raise subprocess.TimeoutExpired(cmd="zmap", timeout=timeout)
 
 
@@ -418,6 +427,49 @@ def test_run_scan_does_not_kill_a_process_that_exits_promptly_after_streaming():
     )
 
     assert not procs[0].killed
+
+
+def test_run_scan_marks_status_failed_when_zmap_exits_non_zero(caplog):
+    # Real production incident, not speculative: a scan reported "1600 attempted, 0
+    # responsive, completed" in ~20ms - not the ~800s a real run takes. ZMap itself had
+    # exited immediately (plausibly a raw-socket/pcap conflict with another concurrent
+    # zmap invocation), and the code had no way to tell that apart from "legitimately
+    # scanned 1600 addresses and found nothing" - stderr was discarded and the exit
+    # code was never checked. That silently produced fabricated-looking "zero
+    # responsive" data indistinguishable from a real null result.
+    import logging
+
+    def popen(cmd, **_):
+        return _FakeProcess([], exits_on_its_own=True, exit_code=1)
+
+    store = InMemoryStore()
+    limiter = TokenBucket(0.001, burst=1)
+
+    with caplog.at_level(logging.ERROR, logger="ichnos.scanner"):
+        outcome = run_scan(
+            scan_id="zmap-fail-test", protocol="http", port=80, zgrab2_module="http", seed=1,
+            candidate_count=1600, blocklist_path="/tmp/x", rate_limiter=limiter,
+            current_state=store.current_state, clock=_fixed_clock(), popen=popen,
+        )
+
+    assert outcome.metadata.status == "failed"
+    assert any("exited with code 1" in r.message for r in caplog.records)
+
+
+def test_run_scan_status_stays_completed_when_zmap_exits_zero():
+    def popen(cmd, **_):
+        return _FakeProcess([], exits_on_its_own=True, exit_code=0)
+
+    store = InMemoryStore()
+    limiter = TokenBucket(0.001, burst=1)
+
+    outcome = run_scan(
+        scan_id="zmap-ok-test", protocol="http", port=80, zgrab2_module="http", seed=1,
+        candidate_count=2, blocklist_path="/tmp/x", rate_limiter=limiter,
+        current_state=store.current_state, clock=_fixed_clock(), popen=popen,
+    )
+
+    assert outcome.metadata.status == "completed"
 
 
 def test_run_scan_target_ip_skips_discovery_and_grabs_directly():
