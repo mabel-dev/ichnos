@@ -52,6 +52,24 @@ def test_read_blocklist_file_missing_file_returns_empty():
     assert read_blocklist_file("/nonexistent/path/for/sure/blocklist.conf") == []
 
 
+def test_write_blocklist_file_leaves_no_temp_files_behind(tmp_path):
+    # Regression test for a real production incident: http/https/ssh each rebuild and
+    # rewrite this same shared path within the same cron tick (all three fire within
+    # the same second) - a concurrently-running ZMap process reading the file
+    # mid-write saw a truncated CIDR ("103." - cut off mid-address), which made ZMap
+    # fatal-error and refuse to start. Writing to a temp file and atomically
+    # os.replace-ing it into place means a concurrent reader always sees either the
+    # complete old file or the complete new one - this just confirms no stray temp
+    # file is left in the directory afterward.
+    path = str(tmp_path / "blocklist.conf")
+    write_blocklist_file(path, ["10.0.0.0/8"])
+    write_blocklist_file(path, ["10.0.0.0/8", "175.45.176.0/22"])
+
+    assert os.listdir(tmp_path) == ["blocklist.conf"]
+    with open(path) as f:
+        assert f.read() == "10.0.0.0/8\n175.45.176.0/22\n"
+
+
 def test_is_blocked_true_inside_a_cidr():
     assert is_blocked("175.45.176.5", ["175.45.176.0/22"]) is True
 

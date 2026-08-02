@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import ipaddress
 import os
+import tempfile
 from typing import Iterable
 from typing import List
 from typing import Union
@@ -71,11 +72,31 @@ def build_blocklist(
 
 
 def write_blocklist_file(path: str, cidrs: Iterable[str]) -> None:
-    """Write in ZMap's `--blocklist-file` format: one CIDR per line."""
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    with open(path, "w") as f:
-        for cidr in cidrs:
-            f.write(f"{cidr}\n")
+    """Write in ZMap's `--blocklist-file` format: one CIDR per line.
+
+    Writes to a temp file in the same directory and atomically renames it into place
+    (os.replace) rather than truncating the destination directly. Real, previously-
+    undetected production bug: http/https/ssh each independently call this against
+    the *same* shared blocklist path within the same cron tick (all three fire within
+    the same second) - a concurrently-running ZMap process reading this file mid-write
+    would see a truncated CIDR, confirmed in production: a line cut off as literally
+    "103." (missing the rest of the address), which made ZMap fatal-error and refuse
+    to start at all ("unable to parse blacklist file"), reported as a failed scan
+    (see scanner.py's exit-code check) rather than silently corrupting results.
+    os.replace is atomic on POSIX, so any concurrent reader always sees either the
+    complete old file or the complete new one, never an in-between state.
+    """
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=directory, prefix=".blocklist-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            for cidr in cidrs:
+                f.write(f"{cidr}\n")
+        os.replace(tmp_path, path)
+    except BaseException:
+        os.unlink(tmp_path)
+        raise
 
 
 def read_blocklist_file(path: str) -> List[str]:
