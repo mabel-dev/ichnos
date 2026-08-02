@@ -1,3 +1,5 @@
+import json
+
 from ichnos.normalize import normalize_http
 from ichnos.normalize import normalize_tls
 
@@ -28,8 +30,6 @@ def test_normalize_http_headers_is_a_json_string_not_a_native_dict():
     # a combination that commit hadn't seen got rejected - silently blocking the
     # `http` dataset's hourly publish for 10 straight hours. A JSON string is a single
     # stable column type regardless of what's inside it.
-    import json
-
     result = {
         "result": {
             "response": {
@@ -106,13 +106,16 @@ def test_normalize_tls_extracts_core_fields():
     out = normalize_tls(result)
     assert out["version"] == "TLS 1.2"
     assert out["cipher_suite"] == "TLS_AES_128_GCM_SHA256"
-    assert out["certificate"]["subject_cn"] == "example.com"
-    assert out["certificate"]["issuer_cn"] == "Let's Encrypt"
-    assert out["certificate"]["fingerprint_sha256"] == "deadbeef"
+    # certificate is a JSON string, not a native dict - same fix as normalize_http's
+    # headers, applied pre-emptively here (see normalize_tls's docstring).
+    certificate = json.loads(out["certificate"])
+    assert certificate["subject_cn"] == "example.com"
+    assert certificate["issuer_cn"] == "Let's Encrypt"
+    assert certificate["fingerprint_sha256"] == "deadbeef"
     assert out["jarm"] is None
 
 
 def test_normalize_tls_handles_missing_fields_gracefully():
     out = normalize_tls({})
     assert out["version"] is None
-    assert out["certificate"]["subject_cn"] is None
+    assert json.loads(out["certificate"])["subject_cn"] is None

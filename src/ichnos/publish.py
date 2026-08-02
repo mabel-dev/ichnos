@@ -34,6 +34,65 @@ from opteryx_upload import UploadClient
 from .parquet import convert_to_parquet
 from .scanner import ScanRunOutcome
 
+# Explicit Parquet schema per dataset - real, previously-undetected production
+# incident, not a defensive-programming exercise: without this, rugo infers each
+# batch's column types from that batch's own rows, and Opteryx pins a table's schema
+# from whichever batch happens to create it. A column that's all-null in the founding
+# batch (e.g. redirect_location, when no scan in that batch hit a redirect) gets
+# inferred as a void/null type - every later batch with a real value for that column
+# then gets rejected outright ("table structure doesn't match"), which repeatedly
+# blocked the `http` dataset's hourly publish. Declaring every column's type here,
+# once, means every batch (including the very first) produces an identical schema
+# regardless of what values happen to be in it - confirmed directly against the real
+# rugo binary: an explicit-schema column that's all-null in the data still comes out
+# typed VARCHAR, not void. Any dataset not listed here falls back to rugo's own
+# per-batch inference (see parquet.convert_to_parquet).
+SCHEMAS: Dict[str, Dict[str, str]] = {
+    "observations": {
+        "scan_id": "string",
+        "observed_at": "string",
+        "ip": "string",
+        "port": "int64",
+        "protocol": "string",
+        "response_status": "string",
+        "fingerprint_id": "string",
+    },
+    "scan_metadata": {
+        "scan_id": "string",
+        "protocol": "string",
+        "started_at": "string",
+        "ended_at": "string",
+        "targets_attempted": "int64",
+        "hosts_responsive": "int64",
+        "status": "string",
+        "seed": "int64",
+    },
+    "versions": {
+        "fingerprint_id": "string",
+        "protocol": "string",
+        "first_seen": "string",
+        "payload": "string",
+    },
+    "http": {
+        "status_code": "int64",
+        "headers": "string",
+        "server": "string",
+        "title": "string",
+        "favicon_hash": "string",
+        "redirect_location": "string",
+        "fingerprint_id": "string",
+        "first_seen": "string",
+    },
+    "https": {
+        "version": "string",
+        "cipher_suite": "string",
+        "certificate": "string",
+        "jarm": "string",
+        "fingerprint_id": "string",
+        "first_seen": "string",
+    },
+}
+
 
 class PublishError(Exception):
     def __init__(self, dataset: str, issues) -> None:
@@ -169,7 +228,7 @@ def publish_hour(
         ndjson_path = os.path.join(tmp_dir, f"{dataset}.ndjson")
         write_ndjson(ndjson_path, rows)
         parquet_path = os.path.join(tmp_dir, f"{dataset}.parquet")
-        convert(ndjson_path, parquet_path)
+        convert(ndjson_path, parquet_path, schema=SCHEMAS.get(dataset))
 
         session = client.create_session()
         session.upload_file(parquet_path)

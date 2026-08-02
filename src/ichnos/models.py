@@ -5,6 +5,7 @@ ScanMetadata, CurrentState) plus the analytical rows that get batched to Opteryx
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from dataclasses import field
 from datetime import datetime
@@ -121,9 +122,14 @@ class VersionRecord:
     payload: Dict[str, Any]
 
     def as_dict(self) -> Dict[str, Any]:
+        # payload is whichever protocol's normalize() output this is (http-shaped or
+        # tls-shaped - genuinely different key sets) - serialized to a JSON string for
+        # the same reason as normalize_http's headers fix: this dataset needs one
+        # stable column type regardless of which protocol's rows land in a given
+        # published batch, not a native struct whose shape depends on what's in it.
         return {
             "fingerprint_id": self.fingerprint_id,
             "protocol": self.protocol,
             "first_seen": self.first_seen.isoformat(),
-            "payload": self.payload,
+            "payload": json.dumps(self.payload, default=str, sort_keys=True),
         }

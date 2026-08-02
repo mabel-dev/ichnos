@@ -16,7 +16,7 @@ from ichnos.publish import read_pending_datasets
 from ichnos.scanner import ScanRunOutcome
 
 
-def fake_convert(ndjson_path, parquet_path):
+def fake_convert(ndjson_path, parquet_path, schema=None):
     """Stand-in for rugo - the real binary isn't available in the test environment,
     and these tests care about the upload/commit flow, not the conversion itself."""
     with open(parquet_path, "w") as f:

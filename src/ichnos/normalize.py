@@ -115,6 +115,14 @@ def normalize_tls(tls_result: Dict[str, Any]) -> Dict[str, Any]:
     Spec fields covered: protocol version, cipher suite, certificate metadata,
     fingerprint. `jarm` is out of MVP scope - that's a separate ZGrab2 module
     (`zgrab2 jarm`), not part of the plain `tls` handshake this design uses for HTTPS.
+
+    `certificate` is serialized to a JSON string rather than returned as a native
+    dict, matching `normalize_http`'s `headers` fix and for the same reason: Opteryx's
+    published-dataset columns need a single stable type regardless of a batch's
+    values, and a native nested dict isn't one (see publish.py's explicit per-dataset
+    Parquet schemas). This field's key set happens to always be the same 5 keys today,
+    so it hasn't actually broken publishing the way `headers` did - but there's no
+    reason to leave it exposed to the same bug once a new cert field gets added later.
     """
     handshake = _get(tls_result, "result", "handshake_log")
     server_hello = _get(handshake, "server_hello") or {}
@@ -122,18 +130,20 @@ def normalize_tls(tls_result: Dict[str, Any]) -> Dict[str, Any]:
     subject = _get(cert, "subject", "common_name")
     issuer = _get(cert, "issuer", "common_name")
 
+    certificate = {
+        "subject_cn": subject[0] if isinstance(subject, list) and subject else subject,
+        "issuer_cn": issuer[0] if isinstance(issuer, list) and issuer else issuer,
+        "serial_number": _get(cert, "serial_number"),
+        "signature_algorithm": _get(cert, "signature_algorithm", "name"),
+        "fingerprint_sha256": _get(
+            handshake, "server_certificates", "certificate", "parsed", "fingerprint_sha256"
+        ),
+    }
+
     return {
         "version": _get(server_hello, "version", "name"),
         "cipher_suite": _get(server_hello, "cipher_suite", "name"),
-        "certificate": {
-            "subject_cn": subject[0] if isinstance(subject, list) and subject else subject,
-            "issuer_cn": issuer[0] if isinstance(issuer, list) and issuer else issuer,
-            "serial_number": _get(cert, "serial_number"),
-            "signature_algorithm": _get(cert, "signature_algorithm", "name"),
-            "fingerprint_sha256": _get(
-                handshake, "server_certificates", "certificate", "parsed", "fingerprint_sha256"
-            ),
-        },
+        "certificate": json.dumps(certificate, sort_keys=True),
         "jarm": None,
     }
 
