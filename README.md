@@ -17,7 +17,8 @@ limiting, target selection, and exclusion handling.
 
 - **Protocols**: HTTP and HTTPS only.
 - **Discovery vs refresh**: `scan` runs native ZMap discovery (rate-limited via ZMap's
-  own `--rate`, 1 pps by default) over addresses that aren't already known-responsive,
+  own `--rate`, `ICHNOS_ZMAP_RATE_PPS` - 2 pps as of the latest data-driven adjustment,
+  see `config.py`'s `zmap_rate_pps`) over addresses that aren't already known-responsive,
   continuously. `refresh` re-tests every already-known-responsive host directly via
   ZGrab2 (no ZMap involved) to detect drift, on a more relaxed cadence. See `cli.py`'s
   module docstring and `scanner.py`'s `run_scan`/`run_refresh_scan`.

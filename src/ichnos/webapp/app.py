@@ -76,9 +76,9 @@ class SiteConfig:
             (
                 "How often are you scanning me?",
                 "See the Responsible Scanning page for the full answer - in short, "
-                "roughly one request per second during active discovery windows, and "
-                "essentially never repeated against the same host except a single "
-                "daily re-check for hosts already known to respond.",
+                "a small number of requests per second during active discovery "
+                "windows, and essentially never repeated against the same host "
+                "except a single daily re-check for hosts already known to respond.",
             ),
             (
                 "How do I stop being scanned?",
@@ -263,7 +263,7 @@ web browser performs when it loads a page.</p>
 </ul>
 
 <h2>How often</h2>
-<p>Discovery of new hosts runs continuously at roughly one request per second
+<p>Discovery of new hosts runs continuously at a small number of requests per second
 (ZMap's own native rate limit), in short windows every 15 minutes - not a sustained
 flood, and a given address is essentially never sampled twice by discovery in any
 practical timeframe. Hosts already known to respond get a separate, single re-check
