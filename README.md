@@ -41,18 +41,18 @@ are explicitly deferred - see the design doc's scaling strategy.
 
 ```
 src/ichnos/
-  models.py          # Exclusion, ScheduleEntry, ScanMetadataRecord, CurrentStateRecord, ...
-  storage/            # storage interfaces + in-memory (dev) and DynamoDB (real) backends
-  ratelimit.py        # global token-bucket throttle
-  blocklist.py        # merges bogons + self-serve opt-outs + jurisdiction CIDRs
-  jurisdiction.py      # weekly job: RIR delegated-stats (or ipdeny fallback) -> CIDR list
-  normalize.py         # extracts protocol-relevant fields from raw ZGrab2 JSON
-  fingerprint.py        # canonicalize + hash normalized fields -> fingerprint_id
-  scanner.py            # native ZMap discovery (run_scan) + known-host refresh (run_refresh_scan)
-  publish.py             # batches changed rows and commits to Opteryx via opteryx-upload
-  webapp/                # public info page, Responsible Scanning page, security.txt/
-                          # scanner.txt, self-service opt-out (FastAPI)
-  cli.py                 # `ichnos scan|refresh|publish|jurisdiction-refresh|serve`
+  models.py         # Exclusion, ScheduleEntry, ScanMetadataRecord, CurrentStateRecord, ...
+  storage/          # storage interfaces + in-memory (dev) and DynamoDB (real) backends
+  ratelimit.py      # global token-bucket throttle
+  blocklist.py      # merges bogons + self-serve opt-outs + jurisdiction CIDRs
+  jurisdiction.py   # weekly job: RIR delegated-stats (or ipdeny fallback) -> CIDR list
+  normalize.py      # extracts protocol-relevant fields from raw ZGrab2 JSON
+  fingerprint.py    # canonicalize + hash normalized fields -> fingerprint_id
+  scanner.py        # native ZMap discovery (run_scan) + known-host refresh (run_refresh_scan)
+  publish.py        # batches changed rows and commits to Opteryx via opteryx-upload
+  webapp/           # public info page, Responsible Scanning page, security.txt/
+                    # scanner.txt, self-service opt-out (FastAPI)
+  cli.py            # `ichnos scan|refresh|publish|jurisdiction-refresh|serve`
 ```
 
 ## Requirements to actually run scans
