@@ -427,3 +427,56 @@ def run_scan(
     metadata.ended_at = clock()
     metadata.status = "completed"
     return outcome
+
+
+def run_refresh_scan(
+    *,
+    scan_id: str,
+    protocol: str,
+    port: int,
+    zgrab2_module: str,
+    blocklist_path: str,
+    rate_limiter: TokenBucket,
+    current_state: CurrentStateStore,
+    run_command: CommandRunner = _default_run_command,
+    clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+) -> ScanRunOutcome:
+    """Re-test every currently-known-responsive host for `protocol`, to detect drift
+    (a server upgrade, a cert rotation, a new fingerprint) since it was last seen.
+
+    No ZMap discovery involved - the whole point is that these addresses are already
+    known, there's no needle-in-haystack search left to do. Same shape as
+    `run_scan()`'s `target_ip` path (skip discovery, go straight to a ZGrab2 grab),
+    just looped over every row `current_state.list_all(protocol)` returns instead of
+    one ad-hoc address. Distinct from discovery (design doc's random-sampling `scan`),
+    which this project runs on its own separate, more relaxed cadence since it's the
+    one actually searching unknown space.
+    """
+    started_at = clock()
+    metadata = ScanMetadataRecord(scan_id=scan_id, protocol=protocol, started_at=started_at)
+    outcome = ScanRunOutcome(metadata=metadata)
+    today = started_at.date().isoformat()
+
+    known_hosts = current_state.list_all(protocol)
+    blocklist_cidrs = read_blocklist_file(blocklist_path)
+    logger.info("refresh %s: %d known %s hosts to re-check", scan_id, len(known_hosts), protocol)
+
+    for record in known_hosts:
+        metadata.targets_attempted += 1
+        # Re-checked per host, not just once up front - a host could have been opted
+        # out or jurisdiction-excluded after it was originally recorded (same reason
+        # run_scan()'s target_ip path re-checks rather than trusting past inclusion).
+        if is_blocked(record.ip, blocklist_cidrs):
+            logger.warning("refresh %s: %s is now blocklisted, skipping", scan_id, record.ip)
+            continue
+        rate_limiter.wait()
+        _grab_and_record(
+            scan_id=scan_id, protocol=protocol, ip=record.ip, port=port,
+            zgrab2_module=zgrab2_module, blocklist_path=blocklist_path,
+            run_command=run_command, current_state=current_state, today=today,
+            clock=clock, outcome=outcome, metadata=metadata,
+        )
+
+    metadata.ended_at = clock()
+    metadata.status = "completed"
+    return outcome

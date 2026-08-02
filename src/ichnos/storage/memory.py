@@ -49,6 +49,9 @@ class _MemoryCurrentStateStore(CurrentStateStore):
     def put(self, record: CurrentStateRecord) -> None:
         self._rows[record.key] = record
 
+    def list_all(self, protocol: str) -> List[CurrentStateRecord]:
+        return [r for r in self._rows.values() if r.protocol == protocol]
+
     def count(self) -> int:
         return len(self._rows)
 

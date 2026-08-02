@@ -3,11 +3,13 @@ import subprocess
 from datetime import datetime
 from datetime import timezone
 
+from ichnos.models import CurrentStateRecord
 from ichnos.ratelimit import TokenBucket
 from ichnos.scanner import DEFAULT_ZMAP_COOLDOWN_SECONDS
 from ichnos.scanner import DEFAULT_ZMAP_RATE_PPS
 from ichnos.scanner import _default_run_command
 from ichnos.scanner import grab_one
+from ichnos.scanner import run_refresh_scan
 from ichnos.scanner import run_scan
 from ichnos.storage.memory import InMemoryStore
 
@@ -515,5 +517,103 @@ def test_run_scan_target_ip_refuses_a_blocklisted_target(tmp_path):
 
     assert outcome.metadata.targets_attempted == 1
     assert outcome.metadata.hosts_responsive == 0
+    assert outcome.observations == []
+    assert outcome.metadata.status == "completed"
+
+
+def test_run_refresh_scan_regrabs_every_known_host():
+    zgrab_result = {
+        "data": {"http": {"result": {"response": {"status_code": 200, "headers": {}}}}}
+    }
+    calls = []
+
+    def run_command(cmd, input=None):
+        calls.append(input.strip())
+        return json.dumps(zgrab_result) + "\n"
+
+    store = InMemoryStore()
+    store.current_state.put(
+        CurrentStateRecord(
+            protocol="http", ip="203.0.113.5", port=80, fingerprint_id="old",
+            last_seen_date="2026-07-01",
+        )
+    )
+    store.current_state.put(
+        CurrentStateRecord(
+            protocol="http", ip="203.0.113.9", port=80, fingerprint_id="old2",
+            last_seen_date="2026-07-01",
+        )
+    )
+    limiter = TokenBucket(0.001, burst=1)
+
+    outcome = run_refresh_scan(
+        scan_id="refresh-test", protocol="http", port=80, zgrab2_module="http",
+        blocklist_path="/tmp/nonexistent-blocklist.conf", rate_limiter=limiter,
+        current_state=store.current_state, run_command=run_command, clock=_fixed_clock(),
+    )
+
+    assert outcome.metadata.targets_attempted == 2
+    assert sorted(calls) == ["203.0.113.5", "203.0.113.9"]
+    assert len(outcome.observations) == 2
+    assert all(o.response_status == "success" for o in outcome.observations)
+    # fingerprint differs from the stale "old"/"old2" values already on record, so both
+    # count as a new version - this is exactly the drift-detection refresh exists for.
+    assert len(outcome.new_versions) == 2
+
+
+def test_run_refresh_scan_skips_a_host_that_is_now_blocklisted(tmp_path):
+    blocklist_path = str(tmp_path / "blocklist.conf")
+    with open(blocklist_path, "w") as f:
+        f.write("203.0.113.9/32\n")
+
+    def run_command(cmd, input=None):
+        if input and input.strip() == "203.0.113.9":
+            raise AssertionError("a blocklisted host should never reach zgrab2")
+        return json.dumps(
+            {"data": {"http": {"result": {"response": {"status_code": 200, "headers": {}}}}}}
+        ) + "\n"
+
+    store = InMemoryStore()
+    store.current_state.put(
+        CurrentStateRecord(
+            protocol="http", ip="203.0.113.5", port=80, fingerprint_id="old",
+            last_seen_date="2026-07-01",
+        )
+    )
+    store.current_state.put(
+        CurrentStateRecord(
+            protocol="http", ip="203.0.113.9", port=80, fingerprint_id="old2",
+            last_seen_date="2026-07-01",
+        )
+    )
+    limiter = TokenBucket(0.001, burst=1)
+
+    outcome = run_refresh_scan(
+        scan_id="refresh-blocked-test", protocol="http", port=80, zgrab2_module="http",
+        blocklist_path=blocklist_path, rate_limiter=limiter,
+        current_state=store.current_state, run_command=run_command, clock=_fixed_clock(),
+    )
+
+    # both are still counted as attempted - the blocklisted one is just skipped, not
+    # silently dropped from the count.
+    assert outcome.metadata.targets_attempted == 2
+    assert len(outcome.observations) == 1
+    assert outcome.observations[0].ip == "203.0.113.5"
+
+
+def test_run_refresh_scan_no_known_hosts():
+    store = InMemoryStore()
+    limiter = TokenBucket(0.001, burst=1)
+
+    def run_command(cmd, input=None):
+        raise AssertionError("nothing to grab when there are no known hosts")
+
+    outcome = run_refresh_scan(
+        scan_id="refresh-empty-test", protocol="http", port=80, zgrab2_module="http",
+        blocklist_path="/tmp/nonexistent-blocklist.conf", rate_limiter=limiter,
+        current_state=store.current_state, run_command=run_command, clock=_fixed_clock(),
+    )
+
+    assert outcome.metadata.targets_attempted == 0
     assert outcome.observations == []
     assert outcome.metadata.status == "completed"

@@ -12,5 +12,5 @@ abuse_email = "abuse@ichnos.online" # required, no default - shown on the public
 # opteryx_workspace             = "ichnos"
 # opteryx_collection            = "landing"
 # rate_interval_seconds         = 5
-# scan_candidates_per_cron_tick = 750
+# scan_candidates_per_cron_tick = 800
 # jurisdiction_countries        = ["JP", "KP", "KR", "CN", "RU", "IR"]

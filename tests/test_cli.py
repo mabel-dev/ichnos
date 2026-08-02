@@ -2,6 +2,7 @@ from datetime import datetime
 from datetime import timezone
 
 import ichnos.cli as cli_module
+from ichnos.models import CurrentStateRecord
 from ichnos.models import ScheduleEntry
 from ichnos.scanner import ScanRunOutcome
 from ichnos.models import ScanMetadataRecord
@@ -162,3 +163,86 @@ def test_cmd_jurisdiction_refresh_skips_upload_without_bucket(monkeypatch, tmp_p
 
     args = cli_module.build_parser().parse_args(["jurisdiction-refresh"])
     assert cli_module.cmd_jurisdiction_refresh(args) == 0
+
+
+def test_cmd_scan_excludes_known_responsive_hosts_from_the_blocklist(monkeypatch, tmp_path):
+    # Discovery must not keep re-finding hosts refresh already covers - confirms the
+    # wiring end-to-end at the CLI layer, not just that _rebuild_blocklist accepts the
+    # parameter.
+    store = _seeded_store()
+    # 93.184.216.34 (formerly example.com's IP) - deliberately outside every range in
+    # blocklist.DEFAULT_BOGONS, so it shows up as its own distinct /32 entry rather
+    # than collapsing into an existing bogon CIDR (a real /24 documentation range,
+    # 203.0.113.0/24, would have silently absorbed a same-range test IP here).
+    store.current_state.put(
+        CurrentStateRecord(
+            protocol="http", ip="93.184.216.34", port=80, fingerprint_id="abc",
+            last_seen_date="2026-08-01",
+        )
+    )
+    monkeypatch.setattr(cli_module, "InMemoryStore", lambda: store)
+
+    fake_outcome = ScanRunOutcome(
+        metadata=ScanMetadataRecord(
+            scan_id="x", protocol="http", started_at=datetime.now(timezone.utc), status="completed"
+        )
+    )
+    monkeypatch.setattr(cli_module, "run_scan", lambda **kwargs: fake_outcome)
+
+    monkeypatch.delenv("ICHNOS_JURISDICTION_S3_BUCKET", raising=False)
+    monkeypatch.setenv(
+        "ICHNOS_JURISDICTION_BLOCKLIST_PATH", str(tmp_path / "jurisdiction-blocklist.conf")
+    )
+    monkeypatch.setenv("ICHNOS_BLOCKLIST_PATH", str(tmp_path / "blocklist.conf"))
+    monkeypatch.setenv("ICHNOS_PENDING_DIR", str(tmp_path / "pending"))
+
+    args = cli_module.build_parser().parse_args(
+        ["scan", "--protocol", "http", "--candidates", "1", "--store", "memory"]
+    )
+    assert cli_module.cmd_scan(args) == 0
+
+    with open(tmp_path / "blocklist.conf") as f:
+        assert "93.184.216.34/32" in f.read()
+
+
+def test_cmd_refresh_writes_pending_outcome(monkeypatch, tmp_path):
+    store = _seeded_store()
+    monkeypatch.setattr(cli_module, "InMemoryStore", lambda: store)
+
+    called_with = {}
+    fake_outcome = ScanRunOutcome(
+        metadata=ScanMetadataRecord(
+            scan_id="x", protocol="http", started_at=datetime.now(timezone.utc), status="completed",
+            targets_attempted=1, hosts_responsive=1,
+        )
+    )
+
+    def fake_run_refresh_scan(**kwargs):
+        called_with.update(kwargs)
+        return fake_outcome
+
+    monkeypatch.setattr(cli_module, "run_refresh_scan", fake_run_refresh_scan)
+
+    monkeypatch.delenv("ICHNOS_JURISDICTION_S3_BUCKET", raising=False)
+    monkeypatch.setenv(
+        "ICHNOS_JURISDICTION_BLOCKLIST_PATH", str(tmp_path / "jurisdiction-blocklist.conf")
+    )
+    monkeypatch.setenv("ICHNOS_BLOCKLIST_PATH", str(tmp_path / "blocklist.conf"))
+    monkeypatch.setenv("ICHNOS_PENDING_DIR", str(tmp_path / "pending"))
+
+    args = cli_module.build_parser().parse_args(["refresh", "--protocol", "http", "--store", "memory"])
+    assert cli_module.cmd_refresh(args) == 0
+
+    assert called_with["protocol"] == "http"
+    assert called_with["port"] == 80
+    assert called_with["zgrab2_module"] == "http"
+    assert (tmp_path / "pending" / "scan_metadata.ndjson").exists()
+
+
+def test_cmd_refresh_fails_for_unknown_protocol(monkeypatch, tmp_path):
+    store = InMemoryStore()  # no ScheduleEntry seeded
+    monkeypatch.setattr(cli_module, "InMemoryStore", lambda: store)
+    monkeypatch.setenv("ICHNOS_PENDING_DIR", str(tmp_path / "pending"))
+
+    args = cli_module.build_parser().parse_args(["refresh", "--protocol", "ftp", "--store", "memory"])
+    assert cli_module.cmd_refresh(args) == 1

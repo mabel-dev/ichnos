@@ -36,7 +36,7 @@ src/ichnos/
   scanner.py            # zmap/zgrab2 subprocess orchestration, paced by the rate limiter
   publish.py             # batches changed rows and commits to Opteryx via opteryx-upload
   webapp/                # public info page + self-service opt-out (FastAPI)
-  cli.py                 # `ichnos scan|publish|jurisdiction-refresh|serve`
+  cli.py                 # `ichnos scan|refresh|publish|jurisdiction-refresh|serve`
 ```
 
 ## Requirements to actually run scans

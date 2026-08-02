@@ -40,3 +40,26 @@ def test_current_state_roundtrip_and_count():
     fetched = store.current_state.get("http", "1.2.3.4", 80)
     assert fetched.fingerprint_id == "abc"
     assert store.current_state.count() == 1
+
+
+def test_current_state_list_all_filters_by_protocol():
+    store = InMemoryStore()
+    store.current_state.put(
+        CurrentStateRecord(
+            protocol="http", ip="1.2.3.4", port=80, fingerprint_id="a", last_seen_date="2026-08-01"
+        )
+    )
+    store.current_state.put(
+        CurrentStateRecord(
+            protocol="http", ip="5.6.7.8", port=80, fingerprint_id="b", last_seen_date="2026-08-01"
+        )
+    )
+    store.current_state.put(
+        CurrentStateRecord(
+            protocol="https", ip="9.9.9.9", port=443, fingerprint_id="c", last_seen_date="2026-08-01"
+        )
+    )
+    http_hosts = store.current_state.list_all("http")
+    assert {r.ip for r in http_hosts} == {"1.2.3.4", "5.6.7.8"}
+    assert store.current_state.list_all("https")[0].ip == "9.9.9.9"
+    assert store.current_state.list_all("mysql") == []

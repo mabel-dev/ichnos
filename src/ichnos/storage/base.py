@@ -52,6 +52,12 @@ class CurrentStateStore(ABC):
         ...
 
     @abstractmethod
+    def list_all(self, protocol: str) -> List[CurrentStateRecord]:
+        """Every known-responsive host for `protocol` - the refresh scan's target
+        list, and the set discovery excludes so it doesn't keep re-finding hosts
+        refresh already covers."""
+
+    @abstractmethod
     def count(self) -> int:
         """Item count - exposed as a CloudWatch metric, a proxy for storage growth."""
 

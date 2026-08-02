@@ -28,8 +28,10 @@ from .base import Store
 
 try:
     import boto3
+    from boto3.dynamodb.conditions import Attr
 except ImportError:  # pragma: no cover - exercised only when the aws extra is missing
     boto3 = None
+    Attr = None
 
 
 def _require_boto3() -> None:
@@ -145,6 +147,32 @@ class DynamoDBCurrentStateStore(CurrentStateStore):
                 "last_seen_date": record.last_seen_date,
             }
         )
+
+    def list_all(self, protocol: str) -> List[CurrentStateRecord]:
+        # Table is keyed by a single partition key ("protocol#ip#port"), no sort key
+        # or GSI, so a prefix match needs a Scan + FilterExpression rather than a
+        # Query - same pagination pattern DynamoDBExclusionStore.list_all() already
+        # uses. Fine at current scale (known-host counts in the tens, not thousands).
+        rows: List[CurrentStateRecord] = []
+        scan_kwargs: Dict[str, Any] = {"FilterExpression": Attr("key").begins_with(f"{protocol}#")}
+        while True:
+            response = self._table.scan(**scan_kwargs)
+            for item in response.get("Items", []):
+                ip, port = item["key"].split("#")[1:3]
+                rows.append(
+                    CurrentStateRecord(
+                        protocol=protocol,
+                        ip=ip,
+                        port=int(port),
+                        fingerprint_id=item["fingerprint_id"],
+                        last_seen_date=item["last_seen_date"],
+                    )
+                )
+            last_key = response.get("LastEvaluatedKey")
+            if not last_key:
+                break
+            scan_kwargs["ExclusiveStartKey"] = last_key
+        return rows
 
     def count(self) -> int:
         # DynamoDB's DescribeTable ItemCount is only updated ~every 6 hours - fine for a
