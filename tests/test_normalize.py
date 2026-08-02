@@ -19,6 +19,30 @@ def test_normalize_http_extracts_core_fields():
     assert out["favicon_hash"] is None
 
 
+def test_normalize_http_headers_is_a_json_string_not_a_native_dict():
+    # Regression test for a real production incident: raw HTTP headers vary
+    # arbitrarily by target (confirmed against real published data - 13 distinct
+    # header key-sets across 107 real rows). Publishing that as a native nested
+    # column made Opteryx's inferred table schema depend on whichever header
+    # combinations happened to appear in the first commit, and every later batch with
+    # a combination that commit hadn't seen got rejected - silently blocking the
+    # `http` dataset's hourly publish for 10 straight hours. A JSON string is a single
+    # stable column type regardless of what's inside it.
+    import json
+
+    result = {
+        "result": {
+            "response": {
+                "status_code": 200,
+                "headers": {"Server": ["nginx"], "Content-Type": ["text/html"]},
+            }
+        }
+    }
+    out = normalize_http(result)
+    assert isinstance(out["headers"], str)
+    assert json.loads(out["headers"]) == {"server": ["nginx"], "content-type": ["text/html"]}
+
+
 def test_normalize_http_redirect_location_from_headers():
     result = {
         "result": {
@@ -44,7 +68,7 @@ def test_normalize_http_handles_missing_fields_gracefully():
     out = normalize_http({})
     assert out == {
         "status_code": None,
-        "headers": {},
+        "headers": "{}",
         "server": None,
         "title": None,
         "favicon_hash": None,

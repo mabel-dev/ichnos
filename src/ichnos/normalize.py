@@ -15,6 +15,7 @@ the pipeline.
 """
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 from typing import Dict
@@ -50,6 +51,22 @@ def normalize_http(http_result: Dict[str, Any]) -> Dict[str, Any]:
     `favicon_hash` is intentionally left `None` - the plain `http` module doesn't fetch
     /favicon.ico, that needs a dedicated follow-up request wired into the scanner. Not
     faked here.
+
+    `headers` is serialized to a JSON string rather than returned as a native dict.
+    Real, previously-undetected production bug: unlike `normalize_tls`'s `certificate`
+    (a fixed, hand-picked set of keys, always the same shape), raw HTTP headers vary
+    arbitrarily by target - confirmed against real published data, 13 distinct header
+    key-sets across just 107 real rows (some targets send `etag`/`vary`/`location`,
+    most don't, etc). Publishing that as a native nested column makes each Parquet
+    file's schema for it depend on whichever header combinations happened to appear in
+    that batch, and Opteryx's table schema is pinned by the *first* commit - every
+    later batch with a header combination that first batch didn't happen to see gets
+    rejected outright ("table structure doesn't match"), which is exactly what
+    silently blocked every hourly publish of the `http` dataset for 10 straight hours
+    in production. A JSON string is a single stable column type regardless of what's
+    inside it - the `server` header is still promoted to its own top-level field for
+    the common case, so this only costs a JSON-parse for callers who need a specific
+    other header.
     """
     response = _get(http_result, "result", "response")
     headers = _get(response, "headers") or {}
@@ -65,7 +82,7 @@ def normalize_http(http_result: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         "status_code": _get(response, "status_code"),
-        "headers": normalized_headers,
+        "headers": json.dumps(normalized_headers, sort_keys=True),
         "server": normalized_headers.get("server"),
         "title": _extract_title(_get(response, "body")),
         "favicon_hash": None,
