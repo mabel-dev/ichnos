@@ -45,6 +45,41 @@ def test_normalize_http_headers_is_a_json_string_not_a_native_dict():
     assert json.loads(out["headers"]) == {"server": ["nginx"], "content-type": ["text/html"]}
 
 
+def test_normalize_http_excludes_volatile_headers_from_fingerprint_input():
+    # Regression test for a real production incident: `date` (and `expires`, usually
+    # computed relative to it, and `age`) change on every single request, so including
+    # them meant an unchanged host produced a *different* fingerprint on every scan -
+    # confirmed directly against production data, one real host generating dozens of
+    # spurious "new version" rows over a few hours for a target that never changed.
+    result_a = {
+        "result": {
+            "response": {
+                "status_code": 200,
+                "headers": {
+                    "Server": ["nginx"],
+                    "Date": ["Sun, 02 Aug 2026 10:00:00 GMT"],
+                    "Expires": ["Sun, 02 Aug 2026 10:00:00 GMT"],
+                    "Age": ["12"],
+                },
+            }
+        }
+    }
+    result_b = copy.deepcopy(result_a)
+    result_b["result"]["response"]["headers"]["Date"] = ["Sun, 02 Aug 2026 11:00:00 GMT"]
+    result_b["result"]["response"]["headers"]["Expires"] = ["Sun, 02 Aug 2026 11:00:00 GMT"]
+    result_b["result"]["response"]["headers"]["Age"] = ["9999"]
+
+    out_a = normalize_http(result_a)
+    out_b = normalize_http(result_b)
+
+    assert out_a == out_b  # identical despite different date/expires/age
+    stored_headers = json.loads(out_a["headers"])
+    assert "date" not in stored_headers
+    assert "expires" not in stored_headers
+    assert "age" not in stored_headers
+    assert stored_headers["server"] == ["nginx"]  # unaffected, non-volatile header kept
+
+
 def test_normalize_http_redirect_location_from_headers():
     # Regression test for a real production incident: this path produces a list (like
     # all header values) while the redirect-chain path below produces a plain string -

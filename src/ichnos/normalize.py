@@ -42,6 +42,19 @@ def _first_or_none(value: Any) -> Optional[str]:
     return value
 
 
+
+# Header keys that are inherently volatile - they vary on every request (or close to
+# it) rather than describing a stable property of the service, so they must never
+# contribute to the fingerprint. Real, previously-undetected production bug: `date`
+# (and `expires`, usually computed relative to it, and `age`) riding along inside
+# `headers` meant an unchanged host produced a *different* fingerprint on every single
+# scan - confirmed directly against production data, one real host generating dozens
+# of spurious "new version" rows over a few hours, all for a target that never
+# actually changed. `observed_at` on every Observation row already captures per-scan
+# timing, so nothing informative is lost by excluding these.
+_VOLATILE_HEADER_KEYS = {"date", "expires", "age"}
+
+
 def _extract_title(body: Optional[str]) -> Optional[str]:
     """Best-effort <title> extraction via regex, not a full HTML parser - fine for a
     metadata field, not meant to be a robust HTML processor."""
@@ -86,11 +99,22 @@ def normalize_http(http_result: Dict[str, Any]) -> Dict[str, Any]:
     `Optional[str]` via `_first_or_none`. `server` gets the same treatment
     pre-emptively - same header-list-derived field, same latent risk, not yet observed
     broken but no reason to wait for it to be.
+
+    Separately, `date`/`expires`/`age` are dropped from `headers` entirely (see
+    `_VOLATILE_HEADER_KEYS`) - a different bug from the two above, at the fingerprint
+    layer rather than the storage layer: these change on every single request, so an
+    unchanged host produced a different fingerprint - and therefore a spurious "new
+    version" row - on every scan. Confirmed directly against production data.
     """
     response = _get(http_result, "result", "response")
     headers = _get(response, "headers") or {}
-    # ZGrab2 header values are lists (repeated headers); normalize casing and keep as-is.
-    normalized_headers = {k.lower(): v for k, v in sorted(headers.items())}
+    # ZGrab2 header values are lists (repeated headers); normalize casing and drop
+    # anything known-volatile before it can reach the fingerprinted payload.
+    normalized_headers = {
+        k.lower(): v
+        for k, v in sorted(headers.items())
+        if k.lower() not in _VOLATILE_HEADER_KEYS
+    }
 
     redirect_chain = _get(http_result, "result", "redirect_response_chain") or []
     redirect_location = None
