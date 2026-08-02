@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 from opteryx_upload import ConflictResolution
 
-from ichnos.models import CandidateAttempt
+from ichnos.models import Observation
 from ichnos.models import ScanMetadataRecord
 from ichnos.publish import PublishBatch
 from ichnos.publish import PublishError
@@ -56,19 +56,20 @@ class FakeClient:
         return session
 
 
-def test_publish_batch_includes_candidates_dataset():
+def test_publish_batch_includes_observations_and_scan_metadata():
     outcome = ScanRunOutcome(
         metadata=ScanMetadataRecord(
-            scan_id="s1", protocol="http", started_at=datetime.now(timezone.utc)
+            scan_id="s1", protocol="http", started_at=datetime.now(timezone.utc),
+            targets_attempted=5, hosts_responsive=1,
         ),
-        candidates=[
-            CandidateAttempt(
-                scan_id="s1", attempted_at=datetime.now(timezone.utc), protocol="http",
-                port=80, seed=111, responded=False,
+        observations=[
+            Observation(
+                scan_id="s1", observed_at=datetime.now(timezone.utc), ip="203.0.113.5",
+                port=80, protocol="http", response_status="success", fingerprint_id="abc",
             ),
-            CandidateAttempt(
-                scan_id="s1", attempted_at=datetime.now(timezone.utc), protocol="http",
-                port=80, seed=222, responded=True,
+            Observation(
+                scan_id="s1", observed_at=datetime.now(timezone.utc), ip="203.0.113.9",
+                port=80, protocol="http", response_status="closed", fingerprint_id=None,
             ),
         ],
     )
@@ -76,9 +77,10 @@ def test_publish_batch_includes_candidates_dataset():
     batch.add_scan_outcome(outcome)
 
     datasets = batch.datasets()
-    assert "candidates" in datasets
-    assert len(datasets["candidates"]) == 2
-    assert {row["seed"] for row in datasets["candidates"]} == {111, 222}
+    assert "candidates" not in datasets  # dropped: aggregate-only tracking now
+    assert len(datasets["observations"]) == 2
+    assert {row["ip"] for row in datasets["observations"]} == {"203.0.113.5", "203.0.113.9"}
+    assert len(datasets["scan_metadata"]) == 1
     assert not batch.is_empty()
 
 

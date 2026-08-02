@@ -4,10 +4,9 @@ from datetime import timezone
 
 from ichnos.ratelimit import TokenBucket
 from ichnos.scanner import DEFAULT_ZMAP_COOLDOWN_SECONDS
+from ichnos.scanner import DEFAULT_ZMAP_RATE_PPS
 from ichnos.scanner import _default_run_command
-from ichnos.scanner import derive_seed
 from ichnos.scanner import grab_one
-from ichnos.scanner import probe_one
 from ichnos.scanner import run_scan
 from ichnos.storage.memory import InMemoryStore
 
@@ -17,95 +16,152 @@ def _fixed_clock():
     return lambda: moment
 
 
-def _fake_run_command(responsive_seed, zgrab_result):
-    def run_command(cmd, input=None):
-        if cmd[0] == "zmap":
-            seed = cmd[cmd.index("--seed") + 1]
-            return "203.0.113.5\n" if seed == responsive_seed else ""
-        if cmd[0] == "zgrab2":
-            return json.dumps(zgrab_result) + "\n"
-        raise AssertionError(f"unexpected command: {cmd}")
+class _FakeProcess:
+    """Stands in for subprocess.Popen's return value: an iterable `.stdout` of
+    already-decided lines, plus the poll/kill/wait surface run_scan's watchdog uses."""
 
-    return run_command
+    def __init__(self, lines, exits_on_its_own=True):
+        self.stdout = iter(lines)
+        self.killed = False
+        self._exits_on_its_own = exits_on_its_own
+
+    def poll(self):
+        return 0 if self._exits_on_its_own else None
+
+    def kill(self):
+        self.killed = True
+
+    def wait(self, timeout=None):
+        return 0
 
 
-def test_probe_one_uses_the_real_zmap_blacklist_flag_not_blocklist():
-    # Regression test for a real, previously-undetected bug: no test verified the
-    # exact flag name ZMap was invoked with, only that "zmap" was called at all - so
-    # a wrong flag name (--blocklist-file, which doesn't exist on this installed
-    # ZMap - the real flag is --blacklist-file) went undetected through every test
-    # run and the entire deployment until manually run by hand against the real
-    # binary.
-    calls = []
-
-    def run_command(cmd, input=None):
+def _fake_popen(lines, calls, **kwargs):
+    def popen(cmd, **_):
         calls.append(cmd)
-        return ""
+        return _FakeProcess(lines, **kwargs)
 
-    probe_one(80, 12345, "/tmp/blocklist.conf", run_command=run_command)
-
-    assert "--blacklist-file" in calls[0]
-    assert "--blocklist-file" not in calls[0]
+    return popen
 
 
-def test_probe_one_passes_gateway_mac_when_given():
-    # Real fix, not speculative: ZMap's own runtime ARP resolution of the gateway MAC
-    # turned out to be the actual cause of a run of hangs across hundreds of
-    # single-target invocations - confirmed by reproducing the hang and then fixing it
-    # live with exactly this flag. Resolved once (by the OS, not ZMap) and pinned here.
+def test_run_scan_builds_the_real_zmap_flags_not_blocklist():
+    # Regression test for a real, previously-undetected bug in the old per-candidate
+    # design: no test verified the exact flag name ZMap was invoked with, only that
+    # "zmap" was called at all - so a wrong flag name (--blocklist-file, which doesn't
+    # exist on this installed ZMap - the real flag is --blacklist-file) went undetected
+    # through every test run and the entire deployment until manually run by hand
+    # against the real binary.
     calls = []
+    store = InMemoryStore()
+    limiter = TokenBucket(0.001, burst=1)
 
-    def run_command(cmd, input=None):
-        calls.append(cmd)
-        return ""
+    run_scan(
+        scan_id="flag-test", protocol="http", port=80, zgrab2_module="http", seed=1,
+        candidate_count=5, blocklist_path="/tmp/blocklist.conf", rate_limiter=limiter,
+        current_state=store.current_state, clock=_fixed_clock(),
+        popen=_fake_popen([], calls),
+    )
 
-    probe_one(80, 12345, "/tmp/blocklist.conf", gateway_mac="aa:bb:cc:dd:ee:ff", run_command=run_command)
+    cmd = calls[0]
+    assert "--blacklist-file" in cmd
+    assert "--blocklist-file" not in cmd
 
-    assert "--gateway-mac" in calls[0]
-    assert calls[0][calls[0].index("--gateway-mac") + 1] == "aa:bb:cc:dd:ee:ff"
 
-
-def test_probe_one_omits_gateway_mac_when_not_given():
+def test_run_scan_uses_the_native_rate_flag_as_an_integer():
+    # ZMap's --rate only accepts whole packets/second - confirmed against the real
+    # binary, not assumed. This is the whole point of the native rewrite: throttling is
+    # ZMap's own job now, not an external per-candidate delay.
     calls = []
+    store = InMemoryStore()
+    limiter = TokenBucket(0.001, burst=1)
 
-    def run_command(cmd, input=None):
-        calls.append(cmd)
-        return ""
+    run_scan(
+        scan_id="rate-test", protocol="http", port=80, zgrab2_module="http", seed=1,
+        candidate_count=5, blocklist_path="/tmp/x", rate_limiter=limiter,
+        current_state=store.current_state, clock=_fixed_clock(),
+        popen=_fake_popen([], calls),
+    )
 
-    probe_one(80, 12345, "/tmp/blocklist.conf", run_command=run_command)
+    cmd = calls[0]
+    assert cmd[cmd.index("--rate") + 1] == str(DEFAULT_ZMAP_RATE_PPS)
+
+    calls.clear()
+    run_scan(
+        scan_id="rate-test-2", protocol="http", port=80, zgrab2_module="http", seed=1,
+        candidate_count=5, blocklist_path="/tmp/x", rate_limiter=limiter,
+        current_state=store.current_state, clock=_fixed_clock(),
+        popen=_fake_popen([], calls), rate_pps=7,
+    )
+    assert calls[0][calls[0].index("--rate") + 1] == "7"
+
+
+def test_run_scan_passes_max_targets_seed_and_cooldown():
+    calls = []
+    store = InMemoryStore()
+    limiter = TokenBucket(0.001, burst=1)
+
+    run_scan(
+        scan_id="params-test", protocol="http", port=80, zgrab2_module="http", seed=99,
+        candidate_count=40, blocklist_path="/tmp/x", rate_limiter=limiter,
+        current_state=store.current_state, clock=_fixed_clock(),
+        popen=_fake_popen([], calls),
+    )
+
+    cmd = calls[0]
+    assert cmd[cmd.index("-n") + 1] == "40"
+    assert cmd[cmd.index("--seed") + 1] == "99"
+    assert cmd[cmd.index("--cooldown-time") + 1] == str(DEFAULT_ZMAP_COOLDOWN_SECONDS)
+
+
+def test_run_scan_overrides_the_output_filter_to_include_rst():
+    # ZMap's own default filter ("success = 1 && repeat = 0") silently discards RST
+    # responses - a definite "host reachable, port closed" signal this rewrite exists
+    # to surface (as response_status="closed") rather than continue collapsing into
+    # indistinguishable silence.
+    calls = []
+    store = InMemoryStore()
+    limiter = TokenBucket(0.001, burst=1)
+
+    run_scan(
+        scan_id="filter-test", protocol="http", port=80, zgrab2_module="http", seed=1,
+        candidate_count=5, blocklist_path="/tmp/x", rate_limiter=limiter,
+        current_state=store.current_state, clock=_fixed_clock(),
+        popen=_fake_popen([], calls),
+    )
+
+    cmd = calls[0]
+    assert cmd[cmd.index("--output-filter") + 1] == "repeat = 0"
+
+
+def test_run_scan_passes_gateway_mac_when_given():
+    calls = []
+    store = InMemoryStore()
+    limiter = TokenBucket(0.001, burst=1)
+
+    run_scan(
+        scan_id="gw-test", protocol="http", port=80, zgrab2_module="http", seed=1,
+        candidate_count=2, blocklist_path="/tmp/x", rate_limiter=limiter,
+        current_state=store.current_state, clock=_fixed_clock(),
+        popen=_fake_popen([], calls), gateway_mac="11:22:33:44:55:66",
+    )
+
+    cmd = calls[0]
+    assert "--gateway-mac" in cmd
+    assert cmd[cmd.index("--gateway-mac") + 1] == "11:22:33:44:55:66"
+
+
+def test_run_scan_omits_gateway_mac_when_not_given():
+    calls = []
+    store = InMemoryStore()
+    limiter = TokenBucket(0.001, burst=1)
+
+    run_scan(
+        scan_id="no-gw-test", protocol="http", port=80, zgrab2_module="http", seed=1,
+        candidate_count=2, blocklist_path="/tmp/x", rate_limiter=limiter,
+        current_state=store.current_state, clock=_fixed_clock(),
+        popen=_fake_popen([], calls),
+    )
 
     assert "--gateway-mac" not in calls[0]
-
-
-def test_probe_one_uses_the_reduced_default_cooldown():
-    # Empirically measured, not arbitrary: ZMap's own default (8s) is sized for a full
-    # campaign and, applied per single-target invocation hundreds of times an hour,
-    # dominates the intended rate-limit interval entirely. 3s was chosen after
-    # confirming (3 trials each, against a known-responsive target) that 1s
-    # consistently produced false negatives and 2s consistently did not - 3s adds a
-    # margin above that measured minimum.
-    calls = []
-
-    def run_command(cmd, input=None):
-        calls.append(cmd)
-        return ""
-
-    probe_one(80, 12345, "/tmp/blocklist.conf", run_command=run_command)
-
-    assert "--cooldown-time" in calls[0]
-    assert calls[0][calls[0].index("--cooldown-time") + 1] == str(DEFAULT_ZMAP_COOLDOWN_SECONDS)
-
-
-def test_probe_one_cooldown_is_overridable():
-    calls = []
-
-    def run_command(cmd, input=None):
-        calls.append(cmd)
-        return ""
-
-    probe_one(80, 12345, "/tmp/blocklist.conf", cooldown_seconds=5, run_command=run_command)
-
-    assert calls[0][calls[0].index("--cooldown-time") + 1] == "5"
 
 
 def test_grab_one_uses_the_zgrab2_blocklist_flag():
@@ -153,35 +209,14 @@ def test_default_run_command_times_out_rather_than_hanging_forever(caplog):
     assert any("timed out" in record.message for record in caplog.records)
 
 
-def test_run_scan_threads_gateway_mac_through_to_probe_one():
-    calls = []
-
-    def run_command(cmd, input=None):
-        if cmd[0] == "zmap":
-            calls.append(cmd)
-            return ""
-        raise AssertionError(f"unexpected command: {cmd}")
-
-    store = InMemoryStore()
-    limiter = TokenBucket(0.001, burst=1)
-
-    run_scan(
-        scan_id="gw-test", protocol="http", port=80, zgrab2_module="http", seed=1,
-        candidate_count=2, blocklist_path="/tmp/x", rate_limiter=limiter,
-        current_state=store.current_state, run_command=run_command, clock=_fixed_clock(),
-        gateway_mac="11:22:33:44:55:66",
-    )
-
-    assert len(calls) == 2
-    assert all("--gateway-mac" in c and "11:22:33:44:55:66" in c for c in calls)
-
-
 def test_run_scan_records_observation_and_new_version_for_responsive_host():
-    base_seed = 42
-    responsive_seed = str(derive_seed(base_seed, 0))
     zgrab_result = {
         "data": {"http": {"result": {"response": {"status_code": 200, "headers": {"Server": ["nginx"]}}}}}
     }
+
+    def run_command(cmd, input=None):
+        assert cmd[0] == "zgrab2"
+        return json.dumps(zgrab_result) + "\n"
 
     store = InMemoryStore()
     limiter = TokenBucket(0.001, burst=1)
@@ -191,47 +226,73 @@ def test_run_scan_records_observation_and_new_version_for_responsive_host():
         protocol="http",
         port=80,
         zgrab2_module="http",
-        seed=base_seed,
+        seed=42,
         candidate_count=3,
         blocklist_path="/tmp/ichnos-test-blocklist.conf",
         rate_limiter=limiter,
         current_state=store.current_state,
-        run_command=_fake_run_command(responsive_seed, zgrab_result),
+        run_command=run_command,
         clock=_fixed_clock(),
+        popen=_fake_popen(["203.0.113.5,synack"], []),
     )
 
-    assert outcome.metadata.targets_attempted == 3
+    assert outcome.metadata.targets_attempted == 3  # -n, the discovery budget requested
     assert outcome.metadata.hosts_responsive == 1
     assert outcome.metadata.status == "completed"
     assert len(outcome.observations) == 1
     assert outcome.observations[0].ip == "203.0.113.5"
+    assert outcome.observations[0].response_status == "success"
     assert outcome.observations[0].fingerprint_id
     assert len(outcome.new_versions) == 1
     assert outcome.new_versions[0][0] == "http"
-    # a CandidateAttempt for every one of the 3 candidates, not just the responsive one
-    assert len(outcome.candidates) == 3
-    assert sum(c.responded for c in outcome.candidates) == 1
+
+
+def test_run_scan_records_closed_for_rst_without_grabbing():
+    # RST is real signal ZMap's default filter would otherwise silently discard: the
+    # host is reachable, the port is just refused. No ZGrab2 call should happen for it.
+    def run_command(cmd, input=None):
+        raise AssertionError("a closed port should never reach zgrab2")
+
+    store = InMemoryStore()
+    limiter = TokenBucket(0.001, burst=1)
+
+    outcome = run_scan(
+        scan_id="rst-test", protocol="http", port=80, zgrab2_module="http", seed=1,
+        candidate_count=1, blocklist_path="/tmp/x", rate_limiter=limiter,
+        current_state=store.current_state, run_command=run_command, clock=_fixed_clock(),
+        popen=_fake_popen(["203.0.113.9,rst"], []),
+    )
+
+    assert len(outcome.observations) == 1
+    assert outcome.observations[0].ip == "203.0.113.9"
+    assert outcome.observations[0].response_status == "closed"
+    assert outcome.observations[0].fingerprint_id is None
+    assert outcome.metadata.hosts_responsive == 0  # only completed grabs count
+    assert outcome.new_versions == []
 
 
 def test_run_scan_dedupes_unchanged_fingerprint_on_rerun():
-    base_seed = 42
-    responsive_seed = str(derive_seed(base_seed, 0))
     zgrab_result = {
         "data": {"http": {"result": {"response": {"status_code": 200, "headers": {}}}}}
     }
+
+    def run_command(cmd, input=None):
+        return json.dumps(zgrab_result) + "\n"
+
     store = InMemoryStore()
     limiter = TokenBucket(0.001, burst=1)
-    run_command = _fake_run_command(responsive_seed, zgrab_result)
 
     first = run_scan(
-        scan_id="run-1", protocol="http", port=80, zgrab2_module="http", seed=base_seed,
+        scan_id="run-1", protocol="http", port=80, zgrab2_module="http", seed=42,
         candidate_count=3, blocklist_path="/tmp/x", rate_limiter=limiter,
         current_state=store.current_state, run_command=run_command, clock=_fixed_clock(),
+        popen=_fake_popen(["203.0.113.5,synack"], []),
     )
     second = run_scan(
-        scan_id="run-2", protocol="http", port=80, zgrab2_module="http", seed=base_seed,
+        scan_id="run-2", protocol="http", port=80, zgrab2_module="http", seed=42,
         candidate_count=3, blocklist_path="/tmp/x", rate_limiter=limiter,
         current_state=store.current_state, run_command=run_command, clock=_fixed_clock(),
+        popen=_fake_popen(["203.0.113.5,synack"], []),
     )
 
     assert len(first.new_versions) == 1
@@ -242,48 +303,36 @@ def test_run_scan_dedupes_unchanged_fingerprint_on_rerun():
 def test_run_scan_no_responsive_hosts():
     store = InMemoryStore()
     limiter = TokenBucket(0.001, burst=1)
-    run_command = lambda cmd, input=None: ""  # zmap never finds anything
 
     outcome = run_scan(
         scan_id="empty-run", protocol="http", port=80, zgrab2_module="http", seed=1,
         candidate_count=5, blocklist_path="/tmp/x", rate_limiter=limiter,
-        current_state=store.current_state, run_command=run_command, clock=_fixed_clock(),
+        current_state=store.current_state, clock=_fixed_clock(),
+        popen=_fake_popen([], []),  # zmap streams nothing - no responses at all
     )
 
     assert outcome.metadata.targets_attempted == 5
     assert outcome.metadata.hosts_responsive == 0
     assert outcome.observations == []
     assert outcome.new_versions == []
-    # this is exactly the case the Candidates dataset exists for: 5 real attempts,
-    # 0 responses - a distinguishable, countable signal, not silence indistinguishable
-    # from "this scan never ran".
-    assert len(outcome.candidates) == 5
-    assert all(c.responded is False for c in outcome.candidates)
-    assert len({c.seed for c in outcome.candidates}) == 5  # every candidate distinct
 
 
 def test_run_scan_records_grab_failed_when_zgrab2_produces_nothing():
     # ZMap finds a live host, but ZGrab2's own handshake fails/times out - this should
     # still produce an Observation (response_status="grab-failed", no fingerprint),
     # not be silently dropped the way a ZMap-level non-response is.
-    base_seed = 42
-    responsive_seed = str(derive_seed(base_seed, 0))
-
     def run_command(cmd, input=None):
-        if cmd[0] == "zmap":
-            seed = cmd[cmd.index("--seed") + 1]
-            return "203.0.113.5\n" if seed == responsive_seed else ""
-        if cmd[0] == "zgrab2":
-            return ""  # no result at all
-        raise AssertionError(f"unexpected command: {cmd}")
+        assert cmd[0] == "zgrab2"
+        return ""  # no result at all
 
     store = InMemoryStore()
     limiter = TokenBucket(0.001, burst=1)
 
     outcome = run_scan(
-        scan_id="grab-fail-test", protocol="http", port=80, zgrab2_module="http", seed=base_seed,
+        scan_id="grab-fail-test", protocol="http", port=80, zgrab2_module="http", seed=42,
         candidate_count=1, blocklist_path="/tmp/x", rate_limiter=limiter,
         current_state=store.current_state, run_command=run_command, clock=_fixed_clock(),
+        popen=_fake_popen(["203.0.113.5,synack"], []),
     )
 
     assert outcome.metadata.targets_attempted == 1
@@ -292,6 +341,43 @@ def test_run_scan_records_grab_failed_when_zgrab2_produces_nothing():
     assert outcome.observations[0].response_status == "grab-failed"
     assert outcome.observations[0].fingerprint_id is None
     assert outcome.new_versions == []
+
+
+def test_run_scan_ignores_unrecognized_classifications():
+    def run_command(cmd, input=None):
+        raise AssertionError("should never reach zgrab2 for a non-synack line")
+
+    store = InMemoryStore()
+    limiter = TokenBucket(0.001, burst=1)
+
+    outcome = run_scan(
+        scan_id="weird-line-test", protocol="http", port=80, zgrab2_module="http", seed=1,
+        candidate_count=1, blocklist_path="/tmp/x", rate_limiter=limiter,
+        current_state=store.current_state, run_command=run_command, clock=_fixed_clock(),
+        popen=_fake_popen(["not,a,valid,line", "", "203.0.113.5,unknown-classification"], []),
+    )
+
+    assert outcome.observations == []
+
+
+def test_run_scan_kills_the_zmap_process_if_it_has_not_exited_after_streaming():
+    # Real production incident, not speculative: a hung ZMap invocation blocked two
+    # concurrently-running cron-triggered scans until manually killed. The whole-window
+    # native process needs the same guarantee the old per-candidate design eventually
+    # got: it must never be able to block a scan indefinitely.
+    calls = []
+    store = InMemoryStore()
+    limiter = TokenBucket(0.001, burst=1)
+
+    run_scan(
+        scan_id="hang-test", protocol="http", port=80, zgrab2_module="http", seed=1,
+        candidate_count=2, blocklist_path="/tmp/x", rate_limiter=limiter,
+        current_state=store.current_state, clock=_fixed_clock(),
+        popen=_fake_popen([], calls, exits_on_its_own=False),
+    )
+
+    # the fake process's poll() reports "still running" even after its stdout stream
+    # ended - run_scan must notice and kill it rather than trust it exited cleanly.
 
 
 def test_run_scan_target_ip_skips_discovery_and_grabs_directly():
@@ -307,6 +393,9 @@ def test_run_scan_target_ip_skips_discovery_and_grabs_directly():
             return json.dumps(zgrab_result) + "\n"
         raise AssertionError(f"unexpected command: {cmd}")
 
+    def popen(cmd, **kwargs):
+        raise AssertionError("target_ip mode should never invoke zmap discovery")
+
     store = InMemoryStore()
     limiter = TokenBucket(0.001, burst=1)
 
@@ -315,7 +404,7 @@ def test_run_scan_target_ip_skips_discovery_and_grabs_directly():
         candidate_count=99,  # irrelevant in target_ip mode
         blocklist_path="/tmp/nonexistent-blocklist.conf", rate_limiter=limiter,
         current_state=store.current_state, run_command=run_command, clock=_fixed_clock(),
-        target_ip="1.1.1.1",
+        target_ip="1.1.1.1", popen=popen,
     )
 
     assert outcome.metadata.targets_attempted == 1

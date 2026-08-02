@@ -91,10 +91,12 @@ class Observation:
     ip: str
     port: int
     protocol: str
+    # "success" (fingerprinted), "grab-failed" (ZMap got a SYN-ACK but ZGrab2 couldn't
+    # complete a grab), or "closed" (ZMap got an RST - host is up, port refused; no
+    # grab is attempted, there's no protocol to speak to).
     response_status: str
-    # None when a host answered ZMap's discovery probe but ZGrab2 couldn't complete a
-    # grab (response_status="grab-failed") - there's no protocol payload to fingerprint,
-    # but the fact that *something* is listening on the port is itself worth recording.
+    # None for "grab-failed"/"closed" - there's no protocol payload to fingerprint, but
+    # the fact that *something* answered on the port is itself worth recording.
     fingerprint_id: Optional[str]
 
     def as_dict(self) -> Dict[str, Any]:
@@ -106,39 +108,6 @@ class Observation:
             "protocol": self.protocol,
             "response_status": self.response_status,
             "fingerprint_id": self.fingerprint_id,
-        }
-
-
-@dataclass(frozen=True)
-class CandidateAttempt:
-    """One row of the Candidates dataset - a durable record that a specific candidate
-    *slot* was attempted during discovery, whether or not it ever responded.
-
-    Deliberately keyed by `seed`, not a resolved IP: ZMap's discovery step only tells
-    us the address when something answers - there's no cheap, safe way to resolve what
-    a given seed maps to without either sending a real probe or reimplementing ZMap's
-    permutation algorithm ourselves. `(protocol, port, seed)` is still a durable,
-    reproducible identifier for "this exact candidate was tried" - the same seed always
-    resolves to the same real address if that mapping is ever needed later. This is
-    what makes "500 attempts, 0 responses" a real, countable signal distinct from
-    "never attempted" - the gap this dataset exists to close.
-    """
-
-    scan_id: str
-    attempted_at: datetime
-    protocol: str
-    port: int
-    seed: int
-    responded: bool
-
-    def as_dict(self) -> Dict[str, Any]:
-        return {
-            "scan_id": self.scan_id,
-            "attempted_at": self.attempted_at.isoformat(),
-            "protocol": self.protocol,
-            "port": self.port,
-            "seed": self.seed,
-            "responded": self.responded,
         }
 
 

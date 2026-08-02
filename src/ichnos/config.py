@@ -50,18 +50,24 @@ class Settings:
     # Throttle (design doc §4) - global budget shared across all enabled protocols
     rate_interval_seconds: float = 5.0
 
-    # ZMap's own runtime gateway-MAC ARP resolution turned out to be unreliable across
-    # the hundreds of single-target invocations this design makes (see scanner.py's
-    # probe_one docstring) - resolved once at boot (the OS's own ARP, via ordinary
-    # traffic, not ZMap's raw one) and pinned here instead. Empty means "let ZMap
-    # resolve it itself" - only safe at very low invocation volume, not the real
-    # deployment's steady-state.
+    # ZMap's own runtime gateway-MAC ARP resolution turned out to be unreliable at the
+    # invocation volume this project's earlier per-candidate design made (see
+    # scanner.py's module docstring) - resolved once at boot (the OS's own ARP, via
+    # ordinary traffic, not ZMap's raw one) and pinned here instead. Empty means "let
+    # ZMap resolve it itself".
     zmap_gateway_mac: str = ""
 
-    # ZMap's own default (8s) is sized for one large campaign, not the hundreds of
-    # separate single-target invocations this design makes - see scanner.py's
-    # DEFAULT_ZMAP_COOLDOWN_SECONDS for the measurements behind this default.
+    # ZMap's own default (8s) is sized for one large campaign - now a single tail wait
+    # at the end of each scan window rather than per-target, so a smaller value is
+    # appropriate - see scanner.py's DEFAULT_ZMAP_COOLDOWN_SECONDS for the measurements
+    # behind this default.
     zmap_cooldown_seconds: int = 3
+
+    # ZMap's own native discovery throttle (`--rate`, whole packets/second only - it
+    # rejects fractional values outright). Replaces this project's earlier approach of
+    # externally pacing repeated single-target ZMap invocations with our own rate
+    # limiter - see scanner.py's module docstring.
+    zmap_rate_pps: int = 1
 
     # Opteryx publish target (design doc §3.2)
     opteryx_workspace: str = "ichnos"
@@ -96,6 +102,7 @@ class Settings:
             rate_interval_seconds=_env_float("RATE_INTERVAL_SECONDS", cls.rate_interval_seconds),
             zmap_gateway_mac=_env("ZMAP_GATEWAY_MAC", cls.zmap_gateway_mac),
             zmap_cooldown_seconds=_env_int("ZMAP_COOLDOWN_SECONDS", cls.zmap_cooldown_seconds),
+            zmap_rate_pps=_env_int("ZMAP_RATE_PPS", cls.zmap_rate_pps),
             opteryx_workspace=_env("OPTERYX_WORKSPACE", cls.opteryx_workspace),
             opteryx_collection=_env("OPTERYX_COLLECTION", cls.opteryx_collection),
             opteryx_client_id=_env("OPTERYX_CLIENT_ID", cls.opteryx_client_id),

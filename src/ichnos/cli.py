@@ -3,11 +3,11 @@
 Four subcommands, matching the four things design doc §4/§5 says run on cron:
 
     ichnos scan --protocol http --candidates N
-        One throttled scan run (design doc §4). Runs for roughly
-        `candidates * rate_interval_seconds * 2` seconds (each candidate can consume up
-        to two rate-limiter tokens - one ZMap probe, one ZGrab2 grab - see scanner.py),
-        so size `--candidates` to about fill the gap until cron's next invocation
-        rather than invoking this once per candidate. Appends results to
+        One scan run (design doc §4): a single long-running ZMap discovery process
+        covering up to N candidate addresses, natively rate-limited via ZMap's own
+        `--rate` (see scanner.py) rather than externally paced - runs for roughly
+        `N / rate_pps` seconds plus a fixed cooldown tail, so size `--candidates` to
+        about fill the gap until cron's next invocation. Appends results to
         `pending_dir` as NDJSON, to be picked up by `publish`.
 
     ichnos publish
@@ -134,6 +134,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
         target_ip=args.target,
         gateway_mac=settings.zmap_gateway_mac or None,
         cooldown_seconds=settings.zmap_cooldown_seconds,
+        rate_pps=settings.zmap_rate_pps,
     )
     store.scan_metadata.put(outcome.metadata)
 
