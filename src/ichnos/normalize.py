@@ -33,6 +33,15 @@ def _get(d: Any, *path: str) -> Any:
     return d
 
 
+def _first_or_none(value: Any) -> Optional[str]:
+    """ZGrab2 header values are lists (repeated headers), but not every source of a
+    given field goes through that representation - coerce to a single stable scalar
+    (or None) so the field's type never varies row-to-row."""
+    if isinstance(value, list):
+        return value[0] if value else None
+    return value
+
+
 def _extract_title(body: Optional[str]) -> Optional[str]:
     """Best-effort <title> extraction via regex, not a full HTML parser - fine for a
     metadata field, not meant to be a robust HTML processor."""
@@ -67,6 +76,16 @@ def normalize_http(http_result: Dict[str, Any]) -> Dict[str, Any]:
     inside it - the `server` header is still promoted to its own top-level field for
     the common case, so this only costs a JSON-parse for callers who need a specific
     other header.
+
+    `redirect_location` has the same class of bug for a different reason: it can come
+    from a redirect chain entry's headers (a scalar there) or from a direct `Location`
+    response header (a list, like all header values) - three possible types (None,
+    str, list) for one field depending on which path populated it. Confirmed against
+    real published data: 3 of 22 real pending rows had it as a list, the rest None -
+    that blocked publishing the same way `headers` did. Coerced to a single
+    `Optional[str]` via `_first_or_none`. `server` gets the same treatment
+    pre-emptively - same header-list-derived field, same latent risk, not yet observed
+    broken but no reason to wait for it to be.
     """
     response = _get(http_result, "result", "response")
     headers = _get(response, "headers") or {}
@@ -83,10 +102,10 @@ def normalize_http(http_result: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "status_code": _get(response, "status_code"),
         "headers": json.dumps(normalized_headers, sort_keys=True),
-        "server": normalized_headers.get("server"),
+        "server": _first_or_none(normalized_headers.get("server")),
         "title": _extract_title(_get(response, "body")),
         "favicon_hash": None,
-        "redirect_location": redirect_location,
+        "redirect_location": _first_or_none(redirect_location),
     }
 
 

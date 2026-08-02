@@ -14,7 +14,7 @@ def test_normalize_http_extracts_core_fields():
     }
     out = normalize_http(result)
     assert out["status_code"] == 200
-    assert out["server"] == ["nginx"]
+    assert out["server"] == "nginx"
     assert out["title"] == "Hello World"
     assert out["favicon_hash"] is None
 
@@ -44,13 +44,18 @@ def test_normalize_http_headers_is_a_json_string_not_a_native_dict():
 
 
 def test_normalize_http_redirect_location_from_headers():
+    # Regression test for a real production incident: this path produces a list (like
+    # all header values) while the redirect-chain path below produces a plain string -
+    # three possible types (None, str, list) for one field, confirmed against real
+    # published data (3 of 22 real pending rows had it as a list). That blocked
+    # publishing the same way the `headers` bug did - coerced to a single Optional[str].
     result = {
         "result": {
             "response": {"status_code": 301, "headers": {"Location": ["https://example.com/"]}}
         }
     }
     out = normalize_http(result)
-    assert out["redirect_location"] == ["https://example.com/"]
+    assert out["redirect_location"] == "https://example.com/"
 
 
 def test_normalize_http_redirect_location_from_chain():
