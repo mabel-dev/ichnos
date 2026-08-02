@@ -15,7 +15,7 @@ limiting, target selection, and exclusion handling.
 
 ## Scope (MVP)
 
-- **Protocols**: HTTP and HTTPS only.
+- **Protocols**: HTTP, HTTPS, and SSH.
 - **Discovery vs refresh**: `scan` runs native ZMap discovery (rate-limited via ZMap's
   own `--rate`, `ICHNOS_ZMAP_RATE_PPS` - 2 pps as of the latest data-driven adjustment,
   see `config.py`'s `zmap_rate_pps`) over addresses that aren't already known-responsive,
@@ -34,8 +34,10 @@ limiting, target selection, and exclusion handling.
   touches Opteryx internals.
 
 This is a prototype scoped to prove the pipeline end-to-end, not to achieve broad
-Internet coverage. Raising the rate, adding protocols, and distributing across workers
-are explicitly deferred - see the design doc's scaling strategy.
+Internet coverage. Rate and protocol count have both grown incrementally since MVP
+launch, each time backed by observed production data (see git history on `config.py`
+and `normalize.py`) rather than upfront guessing. Distributing across workers is still
+explicitly deferred - see the design doc's scaling strategy.
 
 ## Layout
 

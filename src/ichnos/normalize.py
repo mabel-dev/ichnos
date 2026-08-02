@@ -148,9 +148,41 @@ def normalize_tls(tls_result: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def normalize_ssh(ssh_result: Dict[str, Any]) -> Dict[str, Any]:
+    """`ssh_result` is the `data.ssh` object from one ZGrab2 ssh-module result line.
+
+    Spec fields covered: banner, software identification, host key algorithm and
+    fingerprint. Deliberately excludes ZGrab2's `server_key_exchange` (the server's
+    offered-algorithm lists - kex/cipher/mac/compression) and most of `key_exchange`
+    (the actual per-connection cryptographic exchange - cookie, ephemeral public
+    values, the signature over this specific handshake): confirmed against real
+    banners that offered-algorithm lists are just negotiation capability, already
+    summarized by `software`, and the exchange material is randomized fresh on every
+    single connection by design - including it would make the fingerprint change on
+    every scan of a completely unchanged host, defeating the reason fingerprinting
+    exists. `host_key_fingerprint_sha256` is the actual stable per-host identity
+    signal here, analogous to normalize_tls's certificate fingerprint. Every field is
+    already a plain scalar (or None) - no JSON-string treatment needed, unlike
+    `headers`/`certificate`.
+    """
+    result = _get(ssh_result, "result") or {}
+    server_id = _get(result, "server_id") or {}
+    host_key = _get(result, "key_exchange", "server_host_key") or {}
+
+    return {
+        "banner": _get(server_id, "raw"),
+        "version": _get(server_id, "version"),
+        "software": _get(server_id, "software"),
+        "comment": _get(server_id, "comment"),
+        "host_key_algorithm": _get(host_key, "algorithm"),
+        "host_key_fingerprint_sha256": _get(host_key, "fingerprint_sha256"),
+    }
+
+
 NORMALIZERS = {
     "http": normalize_http,
     "tls": normalize_tls,
+    "ssh": normalize_ssh,
 }
 
 

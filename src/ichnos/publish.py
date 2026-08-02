@@ -91,6 +91,16 @@ SCHEMAS: Dict[str, Dict[str, str]] = {
         "fingerprint_id": "string",
         "first_seen": "string",
     },
+    "ssh": {
+        "banner": "string",
+        "version": "string",
+        "software": "string",
+        "comment": "string",
+        "host_key_algorithm": "string",
+        "host_key_fingerprint_sha256": "string",
+        "fingerprint_id": "string",
+        "first_seen": "string",
+    },
 }
 
 

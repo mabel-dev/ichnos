@@ -65,13 +65,15 @@ class SiteConfig:
             (
                 "What is this?",
                 "An Internet measurement research project. It sends a small number of "
-                "HTTP/HTTPS protocol-negotiation requests to publicly routable hosts and "
-                "records only the metadata exposed during that negotiation.",
+                "HTTP/HTTPS/SSH protocol-negotiation requests to publicly routable hosts "
+                "and records only the metadata exposed during that negotiation.",
             ),
             (
                 "Is this an attack or a vulnerability scan?",
-                "No. Nothing here attempts to authenticate, exploit, or access anything "
-                "beyond a normal HTTP/HTTPS handshake, exactly as a browser would.",
+                "No. Nothing here attempts to authenticate, log in, exploit, or access "
+                "anything beyond a normal protocol handshake - the same initial exchange "
+                "a browser (HTTP/HTTPS) or an SSH client performs before any credentials "
+                "are ever involved.",
             ),
             (
                 "How often are you scanning me?",
@@ -171,7 +173,7 @@ def _scanner_txt(config: SiteConfig) -> str:
         f"Contact: {config.contact_email}\n"
         f"Info: {config.site_url}/responsible-scanning\n"
         f"Opt-out: {config.site_url}/opt-out\n"
-        f"Purpose: Internet measurement research (HTTP/HTTPS protocol metadata only "
+        f"Purpose: Internet measurement research (HTTP/HTTPS/SSH protocol metadata only "
         f"- no exploitation, authentication, or credential testing)\n"
         f"Source: {config.source_repo_url}\n"
     )
@@ -206,9 +208,10 @@ collected.</p>
 <strong>Source:</strong> <a href="{html.escape(config.source_repo_url)}">{html.escape(config.source_repo_url)}</a></p>
 
 <h2>What is collected</h2>
-<p>Currently HTTP and HTTPS only (status code, headers, TLS certificate metadata) - see
-the scan schedule below. Nothing beyond protocol negotiation is intentionally collected;
-no request is ever authenticated. Full detail, contact, and opt-out instructions:
+<p>Currently HTTP, HTTPS, and SSH (status code, headers, TLS certificate metadata,
+SSH banner and host key fingerprint) - see the scan schedule below. Nothing beyond
+protocol negotiation is intentionally collected; no request is ever authenticated.
+Full detail, contact, and opt-out instructions:
 <a href="/responsible-scanning">Responsible Scanning</a>.</p>
 
 <h2>Scan schedule</h2>
@@ -241,8 +244,10 @@ how to stop it.</p>
 
 <h2>What we scan</h2>
 <table><tr><th>Protocol</th><th>Port</th></tr>{schedule_rows}</table>
-<p>Nothing beyond a normal protocol handshake is attempted - the same negotiation a
-web browser performs when it loads a page.</p>
+<p>Nothing beyond a normal protocol handshake is attempted - for HTTP/HTTPS, the same
+negotiation a web browser performs when it loads a page; for SSH, the same pre-login
+banner and key exchange any SSH client performs before a username or password is ever
+sent.</p>
 
 <h2>What we collect</h2>
 <ul>
@@ -250,6 +255,9 @@ web browser performs when it loads a page.</p>
   banner, page title, redirect location.</li>
   <li><strong>HTTPS:</strong> negotiated TLS version, cipher suite, and certificate
   metadata (subject, issuer, serial number, signature algorithm, fingerprint).</li>
+  <li><strong>SSH:</strong> the server's pre-login banner (software name and version)
+  and host key algorithm/fingerprint. No key exchange material or connection-specific
+  cryptographic values are retained - see this project's `normalize.py` for why.</li>
 </ul>
 <p>No application content, credentials, or session data is collected or retained.</p>
 

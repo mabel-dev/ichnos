@@ -124,6 +124,8 @@ if store.schedule.get("http") is None:
     store.schedule.put(ScheduleEntry(protocol="http", port=80, zgrab2_module="http", cadence="daily"))
 if store.schedule.get("https") is None:
     store.schedule.put(ScheduleEntry(protocol="https", port=443, zgrab2_module="tls", cadence="daily"))
+if store.schedule.get("ssh") is None:
+    store.schedule.put(ScheduleEntry(protocol="ssh", port=22, zgrab2_module="ssh", cadence="daily"))
 PYEOF
 
 # --- Jurisdiction blocklist: refresh once now so scanning never starts with an empty
@@ -235,8 +237,10 @@ systemctl enable --now ichnos-web
 cat > /etc/cron.d/ichnos <<CRONEOF
 */15 * * * * root flock -n /var/lock/ichnos-scan-http.lock bash -c 'set -a; . /etc/ichnos/env; set +a; /opt/ichnos-venv/bin/ichnos scan --protocol http --candidates ${scan_candidates_per_cron_tick} --store dynamodb >> /var/log/ichnos/scan-http.log 2>&1'
 */15 * * * * root flock -n /var/lock/ichnos-scan-https.lock bash -c 'set -a; . /etc/ichnos/env; set +a; /opt/ichnos-venv/bin/ichnos scan --protocol https --candidates ${scan_candidates_per_cron_tick} --store dynamodb >> /var/log/ichnos/scan-https.log 2>&1'
+*/15 * * * * root flock -n /var/lock/ichnos-scan-ssh.lock bash -c 'set -a; . /etc/ichnos/env; set +a; /opt/ichnos-venv/bin/ichnos scan --protocol ssh --candidates ${scan_candidates_per_cron_tick} --store dynamodb >> /var/log/ichnos/scan-ssh.log 2>&1'
 0 4 * * * root flock -n /var/lock/ichnos-refresh-http.lock bash -c 'set -a; . /etc/ichnos/env; set +a; /opt/ichnos-venv/bin/ichnos refresh --protocol http --store dynamodb >> /var/log/ichnos/refresh-http.log 2>&1'
 0 4 * * * root flock -n /var/lock/ichnos-refresh-https.lock bash -c 'set -a; . /etc/ichnos/env; set +a; /opt/ichnos-venv/bin/ichnos refresh --protocol https --store dynamodb >> /var/log/ichnos/refresh-https.log 2>&1'
+0 4 * * * root flock -n /var/lock/ichnos-refresh-ssh.lock bash -c 'set -a; . /etc/ichnos/env; set +a; /opt/ichnos-venv/bin/ichnos refresh --protocol ssh --store dynamodb >> /var/log/ichnos/refresh-ssh.log 2>&1'
 5 * * * * root set -a; . /etc/ichnos/env; set +a; /opt/ichnos-venv/bin/ichnos publish >> /var/log/ichnos/publish.log 2>&1
 0 3 * * 0 root set -a; . /etc/ichnos/env; set +a; /opt/ichnos-venv/bin/ichnos jurisdiction-refresh --source rir --countries "${jurisdiction_countries}" >> /var/log/ichnos/jurisdiction.log 2>&1
 */30 * * * * root certbot certonly --dns-route53 --dns-route53-propagation-seconds 30 -d "${domain_name}" -m "${abuse_email}" --agree-tos --non-interactive --keep-until-expiring --deploy-hook /etc/ichnos/certbot-deploy-hook.sh >> /var/log/ichnos/certbot.log 2>&1
