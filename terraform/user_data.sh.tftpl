@@ -221,10 +221,17 @@ systemctl daemon-reload
 systemctl enable --now ichnos-web
 
 # --- cron: scan (poll every 15 min, one process per protocol), publish hourly,
-# jurisdiction-refresh weekly, certbot retry/renewal every 30 min (see note above) ---
+# jurisdiction-refresh weekly, certbot retry/renewal every 30 min (see note above).
+#
+# Native discovery is sized (scan_candidates_per_cron_tick, see variables.tf) to use
+# most of the 15-minute window but not all of it - `flock -n` is the actual safety
+# net: if a run ever does overrun into the next tick, the overlapping invocation exits
+# immediately instead of running concurrently with the still-active one, which would
+# otherwise silently double the effective scan rate for that protocol. -n means "skip,
+# don't queue" - a missed tick is fine, a doubled rate isn't. ---
 cat > /etc/cron.d/ichnos <<CRONEOF
-*/15 * * * * root set -a; . /etc/ichnos/env; set +a; /opt/ichnos-venv/bin/ichnos scan --protocol http --candidates ${scan_candidates_per_cron_tick} --store dynamodb >> /var/log/ichnos/scan-http.log 2>&1
-*/15 * * * * root set -a; . /etc/ichnos/env; set +a; /opt/ichnos-venv/bin/ichnos scan --protocol https --candidates ${scan_candidates_per_cron_tick} --store dynamodb >> /var/log/ichnos/scan-https.log 2>&1
+*/15 * * * * root flock -n /var/lock/ichnos-scan-http.lock bash -c 'set -a; . /etc/ichnos/env; set +a; /opt/ichnos-venv/bin/ichnos scan --protocol http --candidates ${scan_candidates_per_cron_tick} --store dynamodb >> /var/log/ichnos/scan-http.log 2>&1'
+*/15 * * * * root flock -n /var/lock/ichnos-scan-https.lock bash -c 'set -a; . /etc/ichnos/env; set +a; /opt/ichnos-venv/bin/ichnos scan --protocol https --candidates ${scan_candidates_per_cron_tick} --store dynamodb >> /var/log/ichnos/scan-https.log 2>&1'
 5 * * * * root set -a; . /etc/ichnos/env; set +a; /opt/ichnos-venv/bin/ichnos publish >> /var/log/ichnos/publish.log 2>&1
 0 3 * * 0 root set -a; . /etc/ichnos/env; set +a; /opt/ichnos-venv/bin/ichnos jurisdiction-refresh --source rir --countries "${jurisdiction_countries}" >> /var/log/ichnos/jurisdiction.log 2>&1
 */30 * * * * root certbot certonly --dns-route53 --dns-route53-propagation-seconds 30 -d "${domain_name}" -m "${abuse_email}" --agree-tos --non-interactive --keep-until-expiring --deploy-hook /etc/ichnos/certbot-deploy-hook.sh >> /var/log/ichnos/certbot.log 2>&1
