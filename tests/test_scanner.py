@@ -1,4 +1,5 @@
 import json
+import subprocess
 from datetime import datetime
 from datetime import timezone
 
@@ -18,7 +19,10 @@ def _fixed_clock():
 
 class _FakeProcess:
     """Stands in for subprocess.Popen's return value: an iterable `.stdout` of
-    already-decided lines, plus the poll/kill/wait surface run_scan's watchdog uses."""
+    already-decided lines, plus the poll/kill/wait surface run_scan's watchdog and
+    exit-grace logic use. `exits_on_its_own=False` simulates a process that's genuinely
+    still running once its stdout has EOF'd - `wait()` raises TimeoutExpired (matching
+    real subprocess.Popen) until `kill()` is called, same as a real hung process would."""
 
     def __init__(self, lines, exits_on_its_own=True):
         self.stdout = iter(lines)
@@ -26,13 +30,15 @@ class _FakeProcess:
         self._exits_on_its_own = exits_on_its_own
 
     def poll(self):
-        return 0 if self._exits_on_its_own else None
+        return 0 if (self._exits_on_its_own or self.killed) else None
 
     def kill(self):
         self.killed = True
 
     def wait(self, timeout=None):
-        return 0
+        if self._exits_on_its_own or self.killed:
+            return 0
+        raise subprocess.TimeoutExpired(cmd="zmap", timeout=timeout)
 
 
 def _fake_popen(lines, calls, **kwargs):
@@ -360,24 +366,56 @@ def test_run_scan_ignores_unrecognized_classifications():
     assert outcome.observations == []
 
 
-def test_run_scan_kills_the_zmap_process_if_it_has_not_exited_after_streaming():
+def test_run_scan_kills_the_zmap_process_if_still_running_after_its_exit_grace_period():
     # Real production incident, not speculative: a hung ZMap invocation blocked two
     # concurrently-running cron-triggered scans until manually killed. The whole-window
     # native process needs the same guarantee the old per-candidate design eventually
     # got: it must never be able to block a scan indefinitely.
-    calls = []
+    procs = []
+
+    def popen(cmd, **_):
+        proc = _FakeProcess([], exits_on_its_own=False)
+        procs.append(proc)
+        return proc
+
     store = InMemoryStore()
     limiter = TokenBucket(0.001, burst=1)
 
     run_scan(
         scan_id="hang-test", protocol="http", port=80, zgrab2_module="http", seed=1,
         candidate_count=2, blocklist_path="/tmp/x", rate_limiter=limiter,
-        current_state=store.current_state, clock=_fixed_clock(),
-        popen=_fake_popen([], calls, exits_on_its_own=False),
+        current_state=store.current_state, clock=_fixed_clock(), popen=popen,
     )
 
-    # the fake process's poll() reports "still running" even after its stdout stream
-    # ended - run_scan must notice and kill it rather than trust it exited cleanly.
+    # the fake process's wait() keeps raising TimeoutExpired (still running) even
+    # after its stdout stream ended - run_scan must notice, past the exit grace
+    # period, and kill it rather than trust it will exit cleanly on its own.
+    assert procs[0].killed
+
+
+def test_run_scan_does_not_kill_a_process_that_exits_promptly_after_streaming():
+    # Regression test for a real bug: ZMap closes its stdout (ending the streaming
+    # loop) slightly before it has actually exited - it still has to join its receive
+    # thread and do a little cleanup, confirmed against the real binary. The original
+    # implementation treated "not yet exited immediately after EOF" as "hung" and
+    # killed it on every single normal completion, not just genuine hangs.
+    procs = []
+
+    def popen(cmd, **_):
+        proc = _FakeProcess([], exits_on_its_own=True)
+        procs.append(proc)
+        return proc
+
+    store = InMemoryStore()
+    limiter = TokenBucket(0.001, burst=1)
+
+    run_scan(
+        scan_id="normal-exit-test", protocol="http", port=80, zgrab2_module="http", seed=1,
+        candidate_count=2, blocklist_path="/tmp/x", rate_limiter=limiter,
+        current_state=store.current_state, clock=_fixed_clock(), popen=popen,
+    )
+
+    assert not procs[0].killed
 
 
 def test_run_scan_target_ip_skips_discovery_and_grabs_directly():

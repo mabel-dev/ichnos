@@ -229,6 +229,13 @@ def _grab_and_record(
 
 PopenFactory = Callable[..., "subprocess.Popen"]
 
+DISCOVERY_EXIT_GRACE_SECONDS = 10
+"""How long to wait for ZMap to exit on its own once its stdout has closed (EOF),
+before concluding it's actually stuck and killing it. Not zero: ZMap's receive thread
+still needs to join and it does a little cleanup/logging after the last CSV row is
+written - confirmed against the real binary, a real ~1s gap between "recv: thread
+finished" and "zmap: completed". 10s is a generous margin above that observed gap."""
+
 
 def _stream_discover_and_grab(
     *,
@@ -329,12 +336,23 @@ def _stream_discover_and_grab(
             )
     finally:
         watchdog.cancel()
-        if proc.poll() is None:
+        # ZMap closes stdout (ending the loop above via EOF) slightly before it has
+        # actually exited - its receive thread still needs to join and it does a
+        # little final cleanup/logging after the last CSV row is written (confirmed
+        # against the real binary: a real ~1s gap between "recv: thread finished" and
+        # "zmap: completed"). Treating "not yet exited" as "hung" and killing
+        # immediately was a real bug - it fired on totally normal completions, not
+        # just genuine hangs. Give it a grace period to exit on its own first; only
+        # kill if it's still not gone after that.
+        try:
+            proc.wait(timeout=DISCOVERY_EXIT_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
             logger.error(
-                "scan %s: ZMap discovery exceeded %gs watchdog, killing", scan_id, watchdog_seconds,
+                "scan %s: ZMap discovery still running %gs after its stdout closed, killing",
+                scan_id, DISCOVERY_EXIT_GRACE_SECONDS,
             )
             proc.kill()
-        proc.wait()
+            proc.wait()
 
 
 def run_scan(
