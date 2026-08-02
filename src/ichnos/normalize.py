@@ -52,7 +52,16 @@ def _first_or_none(value: Any) -> Optional[str]:
 # of spurious "new version" rows over a few hours, all for a target that never
 # actually changed. `observed_at` on every Observation row already captures per-scan
 # timing, so nothing informative is lost by excluding these.
-_VOLATILE_HEADER_KEYS = {"date", "expires", "age"}
+#
+# `unknown` is excluded for a different reason: it's ZGrab2's catch-all bucket for
+# headers it couldn't map to a named field - arbitrary and unbounded, exactly where a
+# CDN or server's own per-request tracing header (a cf_ray-style ID, for example, but
+# there's no fixed list of these across every vendor's convention) would land. There's
+# no reliable way to allowlist "stable custom header" vs "volatile per-request ID"
+# inside that bucket by name, so the safe default is excluding the whole thing rather
+# than risk the same class of bug recurring through a header this project doesn't
+# recognize.
+_VOLATILE_HEADER_KEYS = {"date", "expires", "age", "unknown"}
 
 
 def _extract_title(body: Optional[str]) -> Optional[str]:
@@ -100,11 +109,14 @@ def normalize_http(http_result: Dict[str, Any]) -> Dict[str, Any]:
     pre-emptively - same header-list-derived field, same latent risk, not yet observed
     broken but no reason to wait for it to be.
 
-    Separately, `date`/`expires`/`age` are dropped from `headers` entirely (see
-    `_VOLATILE_HEADER_KEYS`) - a different bug from the two above, at the fingerprint
-    layer rather than the storage layer: these change on every single request, so an
-    unchanged host produced a different fingerprint - and therefore a spurious "new
-    version" row - on every scan. Confirmed directly against production data.
+    Separately, `date`/`expires`/`age`/`unknown` are dropped from `headers` entirely
+    (see `_VOLATILE_HEADER_KEYS`) - a different bug from the two above, at the
+    fingerprint layer rather than the storage layer: these can change on every single
+    request, so an unchanged host produced a different fingerprint - and therefore a
+    spurious "new version" row - on every scan. `date`/`expires`/`age` confirmed
+    directly against production data; `unknown` (ZGrab2's catch-all for headers it
+    couldn't map to a named field) excluded pre-emptively for the same reason, since
+    it's exactly where an unrecognized per-request tracing header would land.
     """
     response = _get(http_result, "result", "response")
     headers = _get(response, "headers") or {}

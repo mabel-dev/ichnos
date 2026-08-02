@@ -80,6 +80,37 @@ def test_normalize_http_excludes_volatile_headers_from_fingerprint_input():
     assert stored_headers["server"] == ["nginx"]  # unaffected, non-volatile header kept
 
 
+def test_normalize_http_excludes_unknown_headers_bucket_from_fingerprint_input():
+    # ZGrab2's `unknown` bucket holds headers it couldn't map to a named field -
+    # arbitrary and unbounded, exactly where a CDN/server's own per-request tracing
+    # header would land (a cf_ray-style ID, but there's no fixed name to filter for
+    # across every vendor). Excluded wholesale rather than risk the same class of bug
+    # as date/expires/age recurring through a header this project doesn't recognize.
+    result_a = {
+        "result": {
+            "response": {
+                "status_code": 200,
+                "headers": {
+                    "Server": ["nginx"],
+                    "unknown": [{"key": "cf_ray", "value": ["aaaa1111-XYZ"]}],
+                },
+            }
+        }
+    }
+    result_b = copy.deepcopy(result_a)
+    result_b["result"]["response"]["headers"]["unknown"] = [
+        {"key": "cf_ray", "value": ["bbbb2222-ABC"]}
+    ]
+
+    out_a = normalize_http(result_a)
+    out_b = normalize_http(result_b)
+
+    assert out_a == out_b  # identical despite different per-request tracing IDs
+    stored_headers = json.loads(out_a["headers"])
+    assert "unknown" not in stored_headers
+    assert stored_headers["server"] == ["nginx"]
+
+
 def test_normalize_http_redirect_location_from_headers():
     # Regression test for a real production incident: this path produces a list (like
     # all header values) while the redirect-chain path below produces a plain string -
