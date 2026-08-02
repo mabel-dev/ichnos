@@ -9,8 +9,15 @@ implementation of that design's Phase 3 (HTTP/HTTPS-only MVP).
 ## Scope (MVP)
 
 - **Protocols**: HTTP and HTTPS only.
-- **Rate**: no more than one outbound request per 5 seconds, as a single budget shared
-  across both protocols (see `ratelimit.py`).
+- **Discovery vs refresh**: `scan` runs native ZMap discovery (rate-limited via ZMap's
+  own `--rate`, 1 pps by default) over addresses that aren't already known-responsive,
+  continuously. `refresh` re-tests every already-known-responsive host directly via
+  ZGrab2 (no ZMap involved) to detect drift, on a more relaxed cadence. See `cli.py`'s
+  module docstring and `scanner.py`'s `run_scan`/`run_refresh_scan`.
+- **Rate**: discovery is throttled by ZMap's own native `--rate`, not this project's
+  token bucket. The token bucket (`ratelimit.py`, default one request per 5 seconds)
+  still paces `refresh` and the ad-hoc `scan --target` path, where there's no ZMap
+  invocation to throttle discovery-style.
 - **Jurisdiction pre-exclusion**: Japan, North Korea, South Korea, China, Russia, and
   Iran are excluded from scanning as comprehensively as country-level IP allocation
   data allows (see `jurisdiction.py`). This is best-effort, not a guarantee - see the
@@ -33,7 +40,7 @@ src/ichnos/
   jurisdiction.py      # weekly job: RIR delegated-stats (or ipdeny fallback) -> CIDR list
   normalize.py         # extracts protocol-relevant fields from raw ZGrab2 JSON
   fingerprint.py        # canonicalize + hash normalized fields -> fingerprint_id
-  scanner.py            # zmap/zgrab2 subprocess orchestration, paced by the rate limiter
+  scanner.py            # native ZMap discovery (run_scan) + known-host refresh (run_refresh_scan)
   publish.py             # batches changed rows and commits to Opteryx via opteryx-upload
   webapp/                # public info page + self-service opt-out (FastAPI)
   cli.py                 # `ichnos scan|refresh|publish|jurisdiction-refresh|serve`
@@ -58,8 +65,13 @@ pip install -e ".[aws]"
 ## CLI
 
 ```bash
-# Rebuild blocklist, run a throttled scan, stage results locally:
+# Rebuild blocklist (excluding already-known-responsive hosts), run native ZMap
+# discovery, stage results locally:
 ichnos scan --protocol http --candidates 12 --store memory
+
+# Re-test every currently-known-responsive http host directly via ZGrab2 (no ZMap),
+# to detect drift since it was last seen:
+ichnos refresh --protocol http --store memory
 
 # Commit whatever's staged to Opteryx (needs ICHNOS_OPTERYX_CLIENT_ID/_SECRET):
 ichnos publish
@@ -76,9 +88,9 @@ invocations, so it's not meaningful for `scan`/`publish` in anything but a same-
 demo. Real deployment uses `--store dynamodb` (the default), backed by the tables named
 in `config.py` / `ICHNOS_*_TABLE` env vars.
 
-See `cli.py`'s module docstring for how `--candidates` relates to the rate limiter and
-cron's invocation interval - sizing it wrong either idles the throttle or lets a run
-overrun into the next cron tick.
+See `cli.py`'s module docstring for how `--candidates` relates to ZMap's native `--rate`
+and cron's invocation interval - sizing it wrong either leaves most of the window idle
+or lets a run overrun into the next cron tick.
 
 ## Configuration
 
@@ -98,9 +110,8 @@ callable for the scanner, a `fetch` callable for the jurisdiction refresh, an in
 storage backend) specifically so the test suite runs without zmap/zgrab2, AWS
 credentials, or network access.
 
-## Not yet in this repo
+## Infrastructure
 
-Infrastructure (Terraform/CDK for the EC2 ASG, DynamoDB tables, Secrets Manager, Route
-53/PTR, security groups) is design doc Phase 1 and hasn't been written yet - this repo
-is the application code that infrastructure would run. See the design doc's
-implementation plan for the full phase breakdown.
+Terraform for the real deployment (EC2 ASG, DynamoDB tables, S3, Secrets Manager,
+Route 53, IAM, CloudWatch) lives in `terraform/` - see `terraform/README.md` for setup
+and the deployed layout. Not a design-doc gap anymore; it's live.
