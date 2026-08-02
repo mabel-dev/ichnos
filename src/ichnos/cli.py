@@ -44,6 +44,7 @@ import argparse
 import os
 import sys
 import uuid
+import zlib
 from datetime import datetime
 from datetime import timezone
 from typing import Iterable
@@ -156,8 +157,24 @@ def cmd_scan(args: argparse.Namespace) -> int:
     # that ever answered; the overwhelming majority of each tick's addresses were the
     # exact same never-responsive ones, tick after tick, all day - discovery wasn't
     # actually exploring new address space after the first tick. Seeding from the
-    # current timestamp instead gives every invocation its own permutation.
-    seed = args.seed if args.seed is not None else int(datetime.now(timezone.utc).timestamp())
+    # current timestamp instead gives every invocation its own permutation - confirmed
+    # from real data: the worst-offending repeat address (884 observations) stopped
+    # recurring entirely once this landed.
+    #
+    # A second, smaller version of the same bug: cron fires the http/https/ssh scan
+    # entries within the same second, and int(...timestamp()) truncates to whole
+    # seconds - so every protocol independently computed the *same* seed each tick
+    # (confirmed from real logs: identical seed across all three at every timestamp
+    # checked). Same permutation means all three protocols tested the same candidate
+    # IPs each cycle instead of exploring three independent slices of the address
+    # space. A small per-protocol salt (stable regardless of Python's per-process hash
+    # randomization, unlike the builtin hash()) keeps each protocol on its own
+    # permutation while still giving the same protocol a fresh seed every tick.
+    protocol_salt = zlib.crc32(args.protocol.encode()) % 1000
+    seed = (
+        args.seed if args.seed is not None
+        else int(datetime.now(timezone.utc).timestamp()) + protocol_salt
+    )
     rate_limiter = TokenBucket(settings.rate_interval_seconds, burst=1)
     scan_id = f"{args.protocol}-{uuid.uuid4().hex[:12]}"
     logger.info(

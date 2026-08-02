@@ -205,6 +205,54 @@ def test_cmd_scan_excludes_known_responsive_hosts_from_the_blocklist(monkeypatch
         assert "93.184.216.34/32" in f.read()
 
 
+def test_cmd_scan_gives_different_protocols_different_seeds_at_the_same_instant(
+    monkeypatch, tmp_path
+):
+    # Real production bug, confirmed from live logs: cron fires the http/https/ssh
+    # scan entries within the same second, and int(...timestamp()) truncates to whole
+    # seconds - every protocol independently computed the *same* seed each tick,
+    # confirmed identical across all three at every timestamp checked. Same seed means
+    # the same ZMap permutation, so all three protocols tested the same candidate IPs
+    # each cycle instead of exploring three independent slices of the address space.
+    store = _seeded_store()
+    store.schedule.put(ScheduleEntry(protocol="https", port=443, zgrab2_module="tls"))
+    monkeypatch.setattr(cli_module, "InMemoryStore", lambda: store)
+
+    class _FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 8, 2, 18, 0, 0, tzinfo=tz)
+
+    monkeypatch.setattr(cli_module, "datetime", _FixedDatetime)
+
+    seeds_by_protocol = {}
+
+    def fake_run_scan(**kwargs):
+        seeds_by_protocol[kwargs["protocol"]] = kwargs["seed"]
+        return ScanRunOutcome(
+            metadata=ScanMetadataRecord(
+                scan_id="x", protocol=kwargs["protocol"],
+                started_at=datetime.now(timezone.utc), status="completed",
+            )
+        )
+
+    monkeypatch.setattr(cli_module, "run_scan", fake_run_scan)
+    monkeypatch.delenv("ICHNOS_JURISDICTION_S3_BUCKET", raising=False)
+    monkeypatch.setenv(
+        "ICHNOS_JURISDICTION_BLOCKLIST_PATH", str(tmp_path / "jurisdiction-blocklist.conf")
+    )
+    monkeypatch.setenv("ICHNOS_BLOCKLIST_PATH", str(tmp_path / "blocklist.conf"))
+    monkeypatch.setenv("ICHNOS_PENDING_DIR", str(tmp_path / "pending"))
+
+    for protocol in ("http", "https"):
+        args = cli_module.build_parser().parse_args(
+            ["scan", "--protocol", protocol, "--candidates", "1", "--store", "memory"]
+        )
+        assert cli_module.cmd_scan(args) == 0
+
+    assert seeds_by_protocol["http"] != seeds_by_protocol["https"]
+
+
 def test_cmd_refresh_writes_pending_outcome(monkeypatch, tmp_path):
     store = _seeded_store()
     monkeypatch.setattr(cli_module, "InMemoryStore", lambda: store)
