@@ -7,11 +7,9 @@ from typing import Optional
 
 from ..models import CurrentStateRecord
 from ..models import Exclusion
-from ..models import ScanMetadataRecord
 from ..models import ScheduleEntry
 from .base import CurrentStateStore
 from .base import ExclusionStore
-from .base import ScanMetadataStore
 from .base import ScheduleStore
 from .base import Store
 
@@ -41,20 +39,6 @@ class _MemoryScheduleStore(ScheduleStore):
         self._rows[entry.protocol] = entry
 
 
-class _MemoryScanMetadataStore(ScanMetadataStore):
-    def __init__(self) -> None:
-        self._rows: List[ScanMetadataRecord] = []
-
-    def put(self, record: ScanMetadataRecord) -> None:
-        existing = next((r for r in self._rows if r.scan_id == record.scan_id), None)
-        if existing is not None:
-            self._rows.remove(existing)
-        self._rows.append(record)
-
-    def list_recent(self, limit: int = 50) -> List[ScanMetadataRecord]:
-        return sorted(self._rows, key=lambda r: r.started_at, reverse=True)[:limit]
-
-
 class _MemoryCurrentStateStore(CurrentStateStore):
     def __init__(self) -> None:
         self._rows: Dict[str, CurrentStateRecord] = {}
@@ -73,5 +57,4 @@ class InMemoryStore(Store):
     def __init__(self) -> None:
         self.exclusions = _MemoryExclusionStore()
         self.schedule = _MemoryScheduleStore()
-        self.scan_metadata = _MemoryScanMetadataStore()
         self.current_state = _MemoryCurrentStateStore()

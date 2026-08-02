@@ -3,7 +3,6 @@
 Table layout matches the design doc exactly:
     Exclusions    PK ip_or_cidr
     ScanSchedule  PK protocol
-    ScanMetadata  PK scan_id
     CurrentState  PK protocol#ip#port (see CurrentStateRecord.key)
 
 Requires the `aws` extra (`pip install ichnos[aws]`) - boto3 is not a hard dependency
@@ -21,11 +20,9 @@ from typing import Optional
 from ..models import CurrentStateRecord
 from ..models import Exclusion
 from ..models import ExclusionSource
-from ..models import ScanMetadataRecord
 from ..models import ScheduleEntry
 from .base import CurrentStateStore
 from .base import ExclusionStore
-from .base import ScanMetadataStore
 from .base import ScheduleStore
 from .base import Store
 
@@ -121,53 +118,6 @@ class DynamoDBScheduleStore(ScheduleStore):
         )
 
 
-class DynamoDBScanMetadataStore(ScanMetadataStore):
-    def __init__(self, table_name: str, *, resource: Any = None):
-        _require_boto3()
-        self._table = (resource or boto3.resource("dynamodb")).Table(table_name)
-
-    def put(self, record: ScanMetadataRecord) -> None:
-        item: Dict[str, Any] = {
-            "scan_id": record.scan_id,
-            "protocol": record.protocol,
-            "started_at": record.started_at.isoformat(),
-            "targets_attempted": record.targets_attempted,
-            "hosts_responsive": record.hosts_responsive,
-            "status": record.status,
-            "software_versions": record.software_versions,
-        }
-        if record.ended_at:
-            item["ended_at"] = record.ended_at.isoformat()
-        if record.seed is not None:
-            item["seed"] = record.seed
-        if record.commit_id:
-            item["commit_id"] = record.commit_id
-        if record.rows_written is not None:
-            item["rows_written"] = record.rows_written
-        self._table.put_item(Item=item)
-
-    def list_recent(self, limit: int = 50) -> List[ScanMetadataRecord]:
-        response = self._table.scan(Limit=limit)
-        records = [self._from_item(item) for item in response.get("Items", [])]
-        return sorted(records, key=lambda r: r.started_at, reverse=True)[:limit]
-
-    @staticmethod
-    def _from_item(item: Dict[str, Any]) -> ScanMetadataRecord:
-        return ScanMetadataRecord(
-            scan_id=item["scan_id"],
-            protocol=item["protocol"],
-            started_at=datetime.fromisoformat(item["started_at"]),
-            ended_at=datetime.fromisoformat(item["ended_at"]) if item.get("ended_at") else None,
-            targets_attempted=int(item.get("targets_attempted", 0)),
-            hosts_responsive=int(item.get("hosts_responsive", 0)),
-            status=item.get("status", "unknown"),
-            seed=item.get("seed"),
-            software_versions=item.get("software_versions", {}),
-            commit_id=item.get("commit_id"),
-            rows_written=item.get("rows_written"),
-        )
-
-
 class DynamoDBCurrentStateStore(CurrentStateStore):
     def __init__(self, table_name: str, *, resource: Any = None):
         _require_boto3()
@@ -209,7 +159,6 @@ class DynamoDBStore(Store):
         *,
         exclusions_table: str = "Exclusions",
         schedule_table: str = "ScanSchedule",
-        scan_metadata_table: str = "ScanMetadata",
         current_state_table: str = "CurrentState",
         resource: Any = None,
     ):
@@ -217,5 +166,4 @@ class DynamoDBStore(Store):
         resource = resource or boto3.resource("dynamodb")
         self.exclusions = DynamoDBExclusionStore(exclusions_table, resource=resource)
         self.schedule = DynamoDBScheduleStore(schedule_table, resource=resource)
-        self.scan_metadata = DynamoDBScanMetadataStore(scan_metadata_table, resource=resource)
         self.current_state = DynamoDBCurrentStateStore(current_state_table, resource=resource)

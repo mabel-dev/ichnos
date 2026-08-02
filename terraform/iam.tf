@@ -43,7 +43,6 @@ data "aws_iam_policy_document" "scanner" {
     resources = [
       aws_dynamodb_table.exclusions.arn,
       aws_dynamodb_table.scan_schedule.arn,
-      aws_dynamodb_table.scan_metadata.arn,
       aws_dynamodb_table.current_state.arn,
     ]
   }

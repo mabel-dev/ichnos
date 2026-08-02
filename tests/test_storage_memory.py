@@ -1,10 +1,6 @@
-from datetime import datetime
-from datetime import timezone
-
 from ichnos.models import CurrentStateRecord
 from ichnos.models import Exclusion
 from ichnos.models import ExclusionSource
-from ichnos.models import ScanMetadataRecord
 from ichnos.models import ScheduleEntry
 from ichnos.storage.memory import InMemoryStore
 
@@ -44,37 +40,3 @@ def test_current_state_roundtrip_and_count():
     fetched = store.current_state.get("http", "1.2.3.4", 80)
     assert fetched.fingerprint_id == "abc"
     assert store.current_state.count() == 1
-
-
-def test_scan_metadata_recent_ordering():
-    store = InMemoryStore()
-    store.scan_metadata.put(
-        ScanMetadataRecord(
-            scan_id="a", protocol="http", started_at=datetime(2026, 1, 1, tzinfo=timezone.utc)
-        )
-    )
-    store.scan_metadata.put(
-        ScanMetadataRecord(
-            scan_id="b", protocol="http", started_at=datetime(2026, 1, 2, tzinfo=timezone.utc)
-        )
-    )
-    assert [r.scan_id for r in store.scan_metadata.list_recent()] == ["b", "a"]
-
-
-def test_scan_metadata_put_is_upsert_by_scan_id():
-    store = InMemoryStore()
-    store.scan_metadata.put(
-        ScanMetadataRecord(
-            scan_id="a", protocol="http", started_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
-            status="running",
-        )
-    )
-    store.scan_metadata.put(
-        ScanMetadataRecord(
-            scan_id="a", protocol="http", started_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
-            status="completed",
-        )
-    )
-    recent = store.scan_metadata.list_recent()
-    assert len(recent) == 1
-    assert recent[0].status == "completed"

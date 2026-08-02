@@ -15,7 +15,6 @@ from typing import Optional
 
 from ..models import CurrentStateRecord
 from ..models import Exclusion
-from ..models import ScanMetadataRecord
 from ..models import ScheduleEntry
 
 
@@ -43,16 +42,6 @@ class ScheduleStore(ABC):
         ...
 
 
-class ScanMetadataStore(ABC):
-    @abstractmethod
-    def put(self, record: ScanMetadataRecord) -> None:
-        ...
-
-    @abstractmethod
-    def list_recent(self, limit: int = 50) -> List[ScanMetadataRecord]:
-        ...
-
-
 class CurrentStateStore(ABC):
     @abstractmethod
     def get(self, protocol: str, ip: str, port: int) -> Optional[CurrentStateRecord]:
@@ -68,9 +57,8 @@ class CurrentStateStore(ABC):
 
 
 class Store(ABC):
-    """Bundles the four stores an app needs. Concrete backends implement this once."""
+    """Bundles the three stores an app needs. Concrete backends implement this once."""
 
     exclusions: ExclusionStore
     schedule: ScheduleStore
-    scan_metadata: ScanMetadataStore
     current_state: CurrentStateStore

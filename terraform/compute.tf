@@ -19,7 +19,6 @@ locals {
     eip_allocation_id             = aws_eip.scanner.id
     exclusions_table              = aws_dynamodb_table.exclusions.name
     schedule_table                = aws_dynamodb_table.scan_schedule.name
-    scan_metadata_table           = aws_dynamodb_table.scan_metadata.name
     current_state_table           = aws_dynamodb_table.current_state.name
     rate_interval_seconds         = var.rate_interval_seconds
     scan_candidates_per_cron_tick = var.scan_candidates_per_cron_tick

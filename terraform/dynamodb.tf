@@ -42,21 +42,6 @@ resource "aws_dynamodb_table" "scan_schedule" {
   }
 }
 
-resource "aws_dynamodb_table" "scan_metadata" {
-  name         = "ScanMetadata"
-  billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "scan_id"
-
-  attribute {
-    name = "scan_id"
-    type = "S"
-  }
-
-  server_side_encryption {
-    enabled = true
-  }
-}
-
 resource "aws_dynamodb_table" "current_state" {
   name         = "CurrentState"
   billing_mode = "PAY_PER_REQUEST"

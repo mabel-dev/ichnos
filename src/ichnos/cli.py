@@ -67,7 +67,6 @@ def _build_store(backend: str, settings: Settings):
         return DynamoDBStore(
             exclusions_table=settings.exclusions_table,
             schedule_table=settings.schedule_table,
-            scan_metadata_table=settings.scan_metadata_table,
             current_state_table=settings.current_state_table,
         )
     raise ValueError(f"unknown store backend: {backend!r}")
@@ -136,7 +135,6 @@ def cmd_scan(args: argparse.Namespace) -> int:
         cooldown_seconds=settings.zmap_cooldown_seconds,
         rate_pps=settings.zmap_rate_pps,
     )
-    store.scan_metadata.put(outcome.metadata)
 
     batch = PublishBatch()
     batch.add_scan_outcome(outcome)
