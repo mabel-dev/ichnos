@@ -78,6 +78,10 @@ class Settings:
     site_organisation: str = "TBD"
     site_contact_email: str = "abuse@example.invalid"
     site_form_secret: str = "change-me-in-production"
+    # Used to build absolute URLs in security.txt's Canonical field and scanner.txt -
+    # both are meant to be fetched standalone (not always via a browser following
+    # relative links), so they need the real external URL, not a relative path.
+    site_url: str = "https://ichnos.online"
     # True in the real deployment - nginx terminates TLS and reverse-proxies to this
     # app on loopback, so the opt-out form must read the client IP from the header
     # nginx sets, not request.client.host (see webapp/app.py's module docstring).
@@ -108,5 +112,6 @@ class Settings:
             site_organisation=_env("SITE_ORGANISATION", cls.site_organisation),
             site_contact_email=_env("SITE_CONTACT_EMAIL", cls.site_contact_email),
             site_form_secret=_env("SITE_FORM_SECRET", cls.site_form_secret),
+            site_url=_env("SITE_URL", cls.site_url),
             trust_proxy_headers=_env("TRUST_PROXY_HEADERS", "") == "1",
         )

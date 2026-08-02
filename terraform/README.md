@@ -75,11 +75,22 @@ terraform apply
    state, or any chat session. If the instance already booted before this is set,
    terminate it (the ASG will launch a replacement that picks up the now-populated
    secret) rather than waiting for the next scheduled replacement.
-3. **Request a PTR record.** Open an AWS Support case (Service: EC2, Category: IP
-   address) asking for reverse DNS on `terraform output scanner_public_ip` to point at
-   `ichnos.online`. This has real turnaround time (hours, sometimes longer) - the ZMap
-   best-practices grounding for this whole project calls out publishing reverse DNS
-   specifically, so it's worth filing this promptly rather than as an afterthought.
+3. **Set the PTR record.** No AWS Support case needed - `modify-address-attribute` is
+   self-service:
+   ```bash
+   aws ec2 modify-address-attribute \
+     --allocation-id "$(terraform output -raw eip_allocation_id)" \
+     --domain-name "scan.ichnos.online" \
+     --region us-east-1
+   ```
+   `dns.tf`'s `scanner_ptr_target` record (`scan.ichnos.online -> the EIP`) must exist
+   and have propagated *before* running this - AWS validates the forward record
+   resolves before accepting the PTR. Not the bare root domain - a dedicated
+   subdomain, since the root already serves the public info page over its own cert
+   and this hostname isn't meant to be browsed to directly. The [ZMap best-practices
+   guidance](https://github.com/zmap/zmap/wiki/Scanning-Best-Practices) this project
+   follows specifically calls out publishing reverse DNS, so it's worth doing
+   promptly rather than as an afterthought.
 4. **Confirm the SNS email subscription.** AWS emails a confirmation link to
    `abuse_email` after `apply` - alarms won't deliver until it's clicked.
 

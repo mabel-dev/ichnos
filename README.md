@@ -6,6 +6,14 @@ them, and results are batched hourly into [Opteryx](https://opteryx.app) via the
 [`scan.opteryx`](../scan.opteryx/DESIGN.md) design document - this repo is the
 implementation of that design's Phase 3 (HTTP/HTTPS-only MVP).
 
+**Live site:** <https://ichnos.online> (see [`/responsible-scanning`](https://ichnos.online/responsible-scanning)
+if you've noticed a connection from this project) &middot; **Abuse contact:**
+[abuse@opteryx.app](mailto:abuse@opteryx.app)
+
+This project follows [ZMap's Scanning Best
+Practices](https://github.com/zmap/zmap/wiki/Scanning-Best-Practices) for rate
+limiting, target selection, and exclusion handling.
+
 ## Scope (MVP)
 
 - **Protocols**: HTTP and HTTPS only.
@@ -42,7 +50,8 @@ src/ichnos/
   fingerprint.py        # canonicalize + hash normalized fields -> fingerprint_id
   scanner.py            # native ZMap discovery (run_scan) + known-host refresh (run_refresh_scan)
   publish.py             # batches changed rows and commits to Opteryx via opteryx-upload
-  webapp/                # public info page + self-service opt-out (FastAPI)
+  webapp/                # public info page, Responsible Scanning page, security.txt/
+                          # scanner.txt, self-service opt-out (FastAPI)
   cli.py                 # `ichnos scan|refresh|publish|jurisdiction-refresh|serve`
 ```
 
@@ -109,6 +118,30 @@ Every module above is written against dependency-injected interfaces (a `run_com
 callable for the scanner, a `fetch` callable for the jurisdiction refresh, an in-memory
 storage backend) specifically so the test suite runs without zmap/zgrab2, AWS
 credentials, or network access.
+
+## Public site
+
+Served by `ichnos serve` (`webapp/app.py`), same instance/IP that does the scanning:
+
+- `/` - project info, live scan schedule, FAQ.
+- `/responsible-scanning` - the page for anyone who's noticed a connection from this
+  project: ports/data collected, what's explicitly *not* done, actual scan frequency,
+  contact, opt-out, data retention, and a link to ZMap's Scanning Best Practices.
+- `/.well-known/security.txt` (and `/security.txt` for tools that check the legacy
+  location) - [RFC 9116](https://www.rfc-editor.org/rfc/rfc9116).
+- `/scanner.txt` - informal, not a standard, but common practice among Internet
+  measurement projects (Shodan, Censys publish similar).
+- `/opt-out` - self-service exclusion, takes effect before the next scheduled scan.
+
+The scanner's Elastic IP also has a reverse-DNS PTR record (`scan.ichnos.online`,
+`terraform/dns.tf` + a one-time `aws ec2 modify-address-attribute` call documented in
+`terraform/README.md`) rather than a bare AWS hostname - legitimacy signal to
+whoever's inspecting probe traffic, per the ZMap best-practices guidance above.
+
+**Not yet built** (deferred, per the same review that prompted the pages above - "as
+the project matures," not MVP-blocking): a methodology page covering scan cadence,
+randomization strategy, exclusion policy, data quality, false-positive rate, and known
+limitations.
 
 ## Infrastructure
 

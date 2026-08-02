@@ -4,8 +4,13 @@ output "name_servers" {
 }
 
 output "scanner_public_ip" {
-  description = "The fixed Elastic IP - this is what should get a PTR record via an AWS Support case."
+  description = "The fixed Elastic IP."
   value       = aws_eip.scanner.public_ip
+}
+
+output "eip_allocation_id" {
+  description = "Needed for the manual reverse-DNS step (README.md) - `aws ec2 modify-address-attribute --allocation-id <this> --domain-name scan.<domain>`."
+  value       = aws_eip.scanner.id
 }
 
 output "opteryx_pat_secret_arn" {

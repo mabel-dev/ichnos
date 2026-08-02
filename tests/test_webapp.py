@@ -37,6 +37,42 @@ def test_info_page_lists_enabled_schedule_and_contact():
     assert "abuse@example.invalid" in resp.text
 
 
+def test_info_page_nav_links_to_responsible_scanning_and_opt_out():
+    client, _ = _client()
+    resp = client.get("/")
+    assert 'href="/responsible-scanning"' in resp.text
+    assert 'href="/opt-out"' in resp.text
+
+
+def test_responsible_scanning_page_lists_schedule_contact_and_opt_out():
+    client, _ = _client()
+    resp = client.get("/responsible-scanning")
+    assert resp.status_code == 200
+    assert "http" in resp.text
+    assert "abuse@example.invalid" in resp.text
+    assert 'href="/opt-out"' in resp.text
+
+
+def test_security_txt_has_required_rfc9116_fields():
+    client, _ = _client()
+    for path in ("/.well-known/security.txt", "/security.txt"):
+        resp = client.get(path)
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/plain")
+        assert "Contact: mailto:abuse@example.invalid" in resp.text
+        assert "Expires:" in resp.text
+
+
+def test_scanner_txt_has_contact_and_opt_out():
+    client, _ = _client()
+    resp = client.get("/scanner.txt")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/plain")
+    assert "Contact: abuse@example.invalid" in resp.text
+    assert "/opt-out" in resp.text
+    assert "/responsible-scanning" in resp.text
+
+
 def test_opt_out_form_renders_challenge_fields():
     client, _ = _client()
     resp = client.get("/opt-out")

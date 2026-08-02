@@ -302,6 +302,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
         organisation=settings.site_organisation,
         contact_email=settings.site_contact_email,
         form_secret=settings.site_form_secret,
+        site_url=settings.site_url,
         trust_proxy_headers=settings.trust_proxy_headers,
     )
     app = create_app(store, site_config)

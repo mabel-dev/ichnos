@@ -17,3 +17,19 @@ resource "aws_route53_record" "root_a" {
   ttl     = 300
   records = [aws_eip.scanner.public_ip]
 }
+
+# Forward record for the scanner's reverse-DNS hostname (scan.<domain> -> the EIP).
+# One hostname, not scan-01/scan-02 - a single instance today, not a fleet. Not meant
+# to be visited directly (no TLS cert, no distinct content there); it exists purely
+# so AWS's reverse-DNS PTR for the EIP has a matching forward record to validate
+# against (`aws ec2 modify-address-attribute --domain-name`, set once outside
+# Terraform - see README.md). Receiving mail/network-security tooling is far more
+# likely to treat probe traffic as legitimate when the source IP resolves to
+# something other than a bare AWS-assigned hostname.
+resource "aws_route53_record" "scanner_ptr_target" {
+  zone_id = aws_route53_zone.main.zone_id
+  name    = "scan.${var.domain_name}"
+  type    = "A"
+  ttl     = 300
+  records = [aws_eip.scanner.public_ip]
+}

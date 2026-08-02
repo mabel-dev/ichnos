@@ -38,10 +38,13 @@ from fastapi import FastAPI
 from fastapi import Form
 from fastapi import Request
 from fastapi.responses import HTMLResponse
+from fastapi.responses import PlainTextResponse
 
 from ..models import Exclusion
 from ..models import ExclusionSource
 from ..storage.base import Store
+
+ZMAP_BEST_PRACTICES_URL = "https://github.com/zmap/zmap/wiki/Scanning-Best-Practices"
 
 
 @dataclass(frozen=True)
@@ -50,8 +53,13 @@ class SiteConfig:
     organisation: str = "TBD"
     contact_email: str = "abuse@example.invalid"
     source_repo_url: str = "https://github.com/mabel-dev/ichnos"
+    site_url: str = "https://ichnos.online"
     form_secret: str = "change-me-in-production"
     trust_proxy_headers: bool = False
+    # ~1 year out from when this was set - RFC 9116 expects security.txt to be
+    # re-issued periodically; a hardcoded date with a manual renewal reminder is
+    # proportionate here, not worth a scheduled job for one field.
+    security_txt_expires: str = "2027-08-02T00:00:00.000Z"
     faq: List[tuple] = field(
         default_factory=lambda: [
             (
@@ -67,9 +75,10 @@ class SiteConfig:
             ),
             (
                 "How often are you scanning me?",
-                "At most once every few seconds across this project's entire scan "
-                "volume, project-wide - not targeted, repeated, or high-frequency "
-                "against any one host.",
+                "See the Responsible Scanning page for the full answer - in short, "
+                "roughly one request per second during active discovery windows, and "
+                "essentially never repeated against the same host except a single "
+                "daily re-check for hosts already known to respond.",
             ),
             (
                 "How do I stop being scanned?",
@@ -110,6 +119,16 @@ def _valid_ip_or_cidr(value: str) -> bool:
 
 
 def _page(title: str, body: str) -> str:
+    # Nav on every page, not just linked once from the footer - the audience most
+    # likely to click through (someone who's been probed and is looking up why) may
+    # land directly on /opt-out or /responsible-scanning via a search result, not `/`.
+    nav = """
+<nav style="margin-bottom: 1.5rem; font-size: 0.9em;">
+  <a href="/">Home</a> &middot;
+  <a href="/responsible-scanning">Responsible Scanning</a> &middot;
+  <a href="/opt-out">Opt out</a>
+</nav>
+"""
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -125,12 +144,37 @@ def _page(title: str, body: str) -> str:
   input[type=text] {{ width: 100%; max-width: 24rem; padding: 0.4rem; }}
   button {{ margin-top: 1rem; padding: 0.5rem 1rem; }}
   .muted {{ color: #555; font-size: 0.9em; }}
+  nav a {{ color: inherit; }}
 </style>
 </head>
 <body>
+{nav}
 {body}
 </body>
 </html>"""
+
+
+def _security_txt(config: SiteConfig) -> str:
+    return (
+        f"Contact: mailto:{config.contact_email}\n"
+        f"Expires: {config.security_txt_expires}\n"
+        f"Canonical: {config.site_url}/.well-known/security.txt\n"
+        f"Preferred-Languages: en\n"
+    )
+
+
+def _scanner_txt(config: SiteConfig) -> str:
+    return (
+        f"# {config.project_name} - Internet measurement scanner\n"
+        f"# {config.site_url}\n"
+        f"\n"
+        f"Contact: {config.contact_email}\n"
+        f"Info: {config.site_url}/responsible-scanning\n"
+        f"Opt-out: {config.site_url}/opt-out\n"
+        f"Purpose: Internet measurement research (HTTP/HTTPS protocol metadata only "
+        f"- no exploitation, authentication, or credential testing)\n"
+        f"Source: {config.source_repo_url}\n"
+    )
 
 
 def create_app(store: Store, config: SiteConfig = SiteConfig()) -> FastAPI:
@@ -164,7 +208,8 @@ collected.</p>
 <h2>What is collected</h2>
 <p>Currently HTTP and HTTPS only (status code, headers, TLS certificate metadata) - see
 the scan schedule below. Nothing beyond protocol negotiation is intentionally collected;
-no request is ever authenticated.</p>
+no request is ever authenticated. Full detail, contact, and opt-out instructions:
+<a href="/responsible-scanning">Responsible Scanning</a>.</p>
 
 <h2>Scan schedule</h2>
 <table><tr><th>Protocol</th><th>Port</th><th>Cadence</th></tr>{schedule_rows}</table>
@@ -180,6 +225,80 @@ See <a href="/opt-out">opt-out</a> below to request exclusion.</p>
 <p class="muted"><a href="/opt-out">Request exclusion from future scans &rarr;</a></p>
 """
         return _page(config.project_name, body)
+
+    @app.get("/responsible-scanning", response_class=HTMLResponse)
+    def responsible_scanning_page() -> str:
+        schedule = store.schedule.list_enabled()
+        schedule_rows = "".join(
+            f"<tr><td>{html.escape(e.protocol)}</td><td>{e.port}</td></tr>" for e in schedule
+        ) or "<tr><td colspan=2>No protocols currently enabled.</td></tr>"
+
+        body = f"""
+<h1>Responsible Scanning</h1>
+<p>This page exists for anyone who has noticed a connection from
+{html.escape(config.project_name)} and wants to know what it is, why it happened, and
+how to stop it.</p>
+
+<h2>What we scan</h2>
+<table><tr><th>Protocol</th><th>Port</th></tr>{schedule_rows}</table>
+<p>Nothing beyond a normal protocol handshake is attempted - the same negotiation a
+web browser performs when it loads a page.</p>
+
+<h2>What we collect</h2>
+<ul>
+  <li><strong>HTTP:</strong> status code, response headers, <code>Server</code>
+  banner, page title, redirect location.</li>
+  <li><strong>HTTPS:</strong> negotiated TLS version, cipher suite, and certificate
+  metadata (subject, issuer, serial number, signature algorithm, fingerprint).</li>
+</ul>
+<p>No application content, credentials, or session data is collected or retained.</p>
+
+<h2>What we don't do</h2>
+<ul>
+  <li>No exploitation of vulnerabilities.</li>
+  <li>No authentication, login, or credential testing of any kind.</li>
+  <li>No brute forcing.</li>
+  <li>No execution of commands or code on scanned hosts.</li>
+  <li>No access to anything beyond the public protocol handshake itself.</li>
+</ul>
+
+<h2>How often</h2>
+<p>Discovery of new hosts runs continuously at roughly one request per second
+(ZMap's own native rate limit), in short windows every 15 minutes - not a sustained
+flood, and a given address is essentially never sampled twice by discovery in any
+practical timeframe. Hosts already known to respond get a separate, single re-check
+once a day (a "refresh" pass) to detect changes, not repeated probing. See
+<a href="{ZMAP_BEST_PRACTICES_URL}">ZMap's Scanning Best Practices</a>, which this
+project follows for target selection, rate limiting, and exclusion handling.</p>
+
+<h2>Contact and opt-out</h2>
+<p>Abuse or questions: <a href="mailto:{html.escape(config.contact_email)}">{html.escape(config.contact_email)}</a>.
+To stop being scanned, use the <a href="/opt-out">opt-out form</a> - it takes effect
+before the next scheduled scan and does not require a reason.</p>
+
+<h2>Data retention</h2>
+<p>No fixed retention period is currently enforced; historical records are retained
+for research purposes. Opting out stops future collection for the excluded address -
+it does not retroactively delete records already published.</p>
+
+<h2>Purpose</h2>
+<p>Internet measurement and research, not commercial reconnaissance or targeting.
+Source code, design rationale, and exclusion logic are public:
+<a href="{html.escape(config.source_repo_url)}">{html.escape(config.source_repo_url)}</a>.</p>
+
+<p class="muted">Machine-readable: <a href="/.well-known/security.txt">security.txt</a>
+&middot; <a href="/scanner.txt">scanner.txt</a></p>
+"""
+        return _page("Responsible Scanning", body)
+
+    @app.get("/.well-known/security.txt", response_class=PlainTextResponse)
+    @app.get("/security.txt", response_class=PlainTextResponse)
+    def security_txt() -> PlainTextResponse:
+        return PlainTextResponse(_security_txt(config), media_type="text/plain; charset=utf-8")
+
+    @app.get("/scanner.txt", response_class=PlainTextResponse)
+    def scanner_txt() -> PlainTextResponse:
+        return PlainTextResponse(_scanner_txt(config), media_type="text/plain; charset=utf-8")
 
     @app.get("/opt-out", response_class=HTMLResponse)
     def opt_out_form(request: Request) -> str:
