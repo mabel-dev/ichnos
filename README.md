@@ -2,9 +2,8 @@
 
 Internet measurement service: ZMap discovers responsive hosts, ZGrab2 fingerprints
 them, and results are batched hourly into [Opteryx](https://opteryx.app) via the public
-`opteryx-upload` client. Full design rationale lives in the
-[`scan.opteryx`](../scan.opteryx/DESIGN.md) design document - this repo is the
-implementation of that design's Phase 3 (HTTP/HTTPS-only MVP).
+`opteryx-upload` client. This repo is the implementation of a private design doc's
+Phase 3 (HTTP/HTTPS-only MVP) - the design doc itself isn't published in this repo.
 
 **Live site:** <https://ichnos.online> (see [`/responsible-scanning`](https://ichnos.online/responsible-scanning)
 if you've noticed a connection from this project) &middot; **Abuse contact:**
