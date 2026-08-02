@@ -44,7 +44,8 @@ import argparse
 import os
 import sys
 import uuid
-from datetime import date
+from datetime import datetime
+from datetime import timezone
 from typing import Iterable
 
 from .blocklist import build_blocklist
@@ -148,7 +149,15 @@ def cmd_scan(args: argparse.Namespace) -> int:
     known_responsive_ips = [r.ip for r in store.current_state.list_all(args.protocol)]
     _rebuild_blocklist(settings, store, extra_exclusions=known_responsive_ips)
 
-    seed = args.seed if args.seed is not None else int(date.today().strftime("%Y%m%d"))
+    # Real, previously-undetected bug: a seed fixed for the whole calendar day meant
+    # ZMap's deterministic address permutation - and therefore the actual candidate
+    # set for a given --candidates count - was identical across every cron tick that
+    # day. The known-responsive-host exclusion above only removes the tiny fraction
+    # that ever answered; the overwhelming majority of each tick's addresses were the
+    # exact same never-responsive ones, tick after tick, all day - discovery wasn't
+    # actually exploring new address space after the first tick. Seeding from the
+    # current timestamp instead gives every invocation its own permutation.
+    seed = args.seed if args.seed is not None else int(datetime.now(timezone.utc).timestamp())
     rate_limiter = TokenBucket(settings.rate_interval_seconds, burst=1)
     scan_id = f"{args.protocol}-{uuid.uuid4().hex[:12]}"
     logger.info(
