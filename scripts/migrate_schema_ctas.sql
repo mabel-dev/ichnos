@@ -27,7 +27,7 @@
 -- See the note at the bottom for the view-based alternative that types them for
 -- readers without breaking the writer.
 
-CREATE TABLE ichnos.observations_v2 AS
+CREATE TABLE ichnos.landing.observations_v2 AS
 SELECT scan_id,
        CAST(REPLACE(observed_at, '+00:00', '') AS TIMESTAMP) AS observed_at,
        ip,
@@ -35,9 +35,9 @@ SELECT scan_id,
        protocol,
        response_status,
        fingerprint_id
-  FROM ichnos.observations;
+  FROM ichnos.landing.observations;
 
-CREATE TABLE ichnos.scan_metadata_v2 AS
+CREATE TABLE ichnos.landing.scan_metadata_v2 AS
 SELECT scan_id,
        protocol,
        CAST(REPLACE(started_at, '+00:00', '') AS TIMESTAMP) AS started_at,
@@ -46,18 +46,18 @@ SELECT scan_id,
        hosts_responsive,
        status,
        seed
-  FROM ichnos.scan_metadata;
+  FROM ichnos.landing.scan_metadata;
 
-CREATE TABLE ichnos.versions_v2 AS
+CREATE TABLE ichnos.landing.versions_v2 AS
 SELECT fingerprint_id,
        protocol,
        CAST(REPLACE(first_seen, '+00:00', '') AS TIMESTAMP) AS first_seen,
        payload
-  FROM ichnos.versions;
+  FROM ichnos.landing.versions;
 
 -- favicon_hash dropped: the plain zgrab2 http module never fetched /favicon.ico, so it
 -- was a hardcoded None on every row ever published.
-CREATE TABLE ichnos.http_v2 AS
+CREATE TABLE ichnos.landing.http_v2 AS
 SELECT status_code,
        headers,
        server,
@@ -65,18 +65,18 @@ SELECT status_code,
        redirect_location,
        fingerprint_id,
        CAST(REPLACE(first_seen, '+00:00', '') AS TIMESTAMP) AS first_seen
-  FROM ichnos.http;
+  FROM ichnos.landing.http;
 
 -- jarm dropped: separate zgrab2 module, never wired into the scanner, same story.
-CREATE TABLE ichnos.https_v2 AS
+CREATE TABLE ichnos.landing.https_v2 AS
 SELECT version,
        cipher_suite,
        certificate,
        fingerprint_id,
        CAST(REPLACE(first_seen, '+00:00', '') AS TIMESTAMP) AS first_seen
-  FROM ichnos.https;
+  FROM ichnos.landing.https;
 
-CREATE TABLE ichnos.ssh_v2 AS
+CREATE TABLE ichnos.landing.ssh_v2 AS
 SELECT banner,
        version,
        software,
@@ -85,7 +85,7 @@ SELECT banner,
        host_key_fingerprint_sha256,
        fingerprint_id,
        CAST(REPLACE(first_seen, '+00:00', '') AS TIMESTAMP) AS first_seen
-  FROM ichnos.ssh;
+  FROM ichnos.landing.ssh;
 
 -- Then, once each _v2 has been spot-checked against its source (row counts, and that
 -- no instant came back NULL that wasn't NULL before), drop the originals and rename.
@@ -97,6 +97,6 @@ SELECT banner,
 -- leaving the base tables VARCHAR so the hourly publish keeps working. Verified: the
 -- view's payload column reads back as NVARCHAR while the base table stays appendable.
 --
--- CREATE VIEW ichnos.versions_typed AS
+-- CREATE VIEW ichnos.landing.versions_typed AS
 -- SELECT fingerprint_id, protocol, first_seen, CAST(payload AS NVARCHAR) AS payload
---   FROM ichnos.versions_v2;
+--   FROM ichnos.landing.versions_v2;
