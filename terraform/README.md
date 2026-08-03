@@ -105,6 +105,45 @@ aws logs tail /ichnos/scanner --follow --region us-east-1
 Check the info page lists the `http`/`https` schedule entries, and that
 `/ichnos/scanner`'s log streams show scan/publish activity within the first hour.
 
+## Changing `user_data.sh.tftpl`
+
+Two things about this file bite silently, and both have already happened once:
+
+1. **`apply` does not touch the running instance.** EC2 user-data only executes on an
+   instance's *first* boot, so editing this template and applying just creates a new
+   launch-template version - the live scanner keeps whatever `/etc/ichnos/env` it was
+   born with. Rolling a change out means replacing the instance:
+   ```bash
+   aws ec2 terminate-instances --instance-ids "$(aws autoscaling \
+     describe-auto-scaling-groups --auto-scaling-group-names ichnos-scanner \
+     --query 'AutoScalingGroups[0].Instances[0].InstanceId' --output text)" \
+     --region us-east-1
+   ```
+   The ASG launches a replacement from the latest version. Do it just after an hourly
+   publish (`:05`) - `/var/lib/ichnos/pending/` lives on the root volume and whatever
+   hasn't been published yet is lost with it. To check for drift without guessing,
+   compare the ASG's `LaunchTemplate.Version` against the running instance's - if the
+   instance is on an older version, its env file is stale.
+
+2. **The payload EC2 stores must stay under 16384 bytes.** That is a hard limit, and
+   `apply` fails with `InvalidUserData.Malformed` once it is crossed - which is exactly
+   what happened when the scanner-identity vars pushed the raw script to 16670 bytes.
+   `compute.tf` now uses `base64gzip`, so the capped figure is the *compressed* size
+   (6476 bytes at the time of writing) - ample headroom, but not unlimited. To check
+   before applying:
+   ```bash
+   terraform console <<< 'base64gzip(local.user_data)' | tail -1 | tr -d '"' \
+     | base64 -d | wc -c
+   ```
+   Measure it this way rather than with `length(local.user_data)`: that counts the raw
+   string, and counts *characters* rather than bytes, so it under-reports on the
+   non-ASCII already in the comments (the `§` design-doc references). Bytes are what
+   the limit is denominated in.
+
+   This is worth knowing because the failure is easy to miss: the last successful apply
+   keeps serving new instances, so nothing looks broken until someone compares the
+   running config against the template.
+
 ## Known gaps, not resolved by this configuration
 
 - **Raw scan-log audit trail isn't implemented in the app** (design doc §12 describes

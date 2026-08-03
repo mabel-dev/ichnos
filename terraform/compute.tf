@@ -55,7 +55,13 @@ resource "aws_launch_template" "scanner" {
     http_endpoint = "enabled"
   }
 
-  user_data = base64encode(local.user_data)
+  # gzip, not plain base64: EC2 caps user_data at 16384 decoded bytes and this script
+  # crossed that (16671 bytes) when the scanner-identity vars were added, which is why
+  # `apply` started failing with InvalidUserData.Malformed and the running instance's
+  # /etc/ichnos/env drifted behind this template. cloud-init sniffs the gzip magic
+  # number and decompresses before executing, so the script itself needs no change -
+  # and at ~6.5 KB compressed there's ample headroom for it to keep growing.
+  user_data = base64gzip(local.user_data)
 
   tag_specifications {
     resource_type = "instance"
