@@ -20,8 +20,8 @@ identity](#scanner-identity) below.
 
 - **Protocols**: HTTP, HTTPS, and SSH.
 - **Discovery vs refresh**: `scan` runs native ZMap discovery (rate-limited via ZMap's
-  own `--rate`, `ICHNOS_ZMAP_RATE_PPS` - 2 pps as of the latest data-driven adjustment,
-  see `config.py`'s `zmap_rate_pps`) over addresses that aren't already known-responsive,
+  own `--rate`, `ICHNOS_ZMAP_RATE_PPS` - 8 pps as of the latest adjustment, see
+  `config.py`'s `zmap_rate_pps`) over addresses that aren't already known-responsive,
   continuously. `refresh` re-tests every already-known-responsive host directly via
   ZGrab2 (no ZMap involved) to detect drift, on a more relaxed cadence. See `cli.py`'s
   module docstring and `scanner.py`'s `run_scan`/`run_refresh_scan`.
@@ -38,8 +38,10 @@ identity](#scanner-identity) below.
 
 This is a prototype scoped to prove the pipeline end-to-end, not to achieve broad
 Internet coverage. Rate and protocol count have both grown incrementally since MVP
-launch, each time backed by observed production data (see git history on `config.py`
-and `normalize.py`) rather than upfront guessing. Distributing across workers is still
+launch, mostly backed by observed production data (see git history on `config.py` and
+`normalize.py`) rather than upfront guessing - the exception is the current 8 pps step,
+which ran ahead of the observation window and is flagged as such in `config.py`'s
+`zmap_rate_pps`. Distributing across workers is still
 explicitly deferred - see the design doc's scaling strategy.
 
 ## Layout
@@ -109,9 +111,13 @@ or lets a run overrun into the next cron tick.
 ## Configuration
 
 All settings are environment variables, prefixed `ICHNOS_` - see `config.py` for the
-full list (table names, blocklist paths, rate interval, Opteryx workspace/collection,
-PAT credentials). Nothing is hardcoded so schedule/rate/target changes don't need a
-redeploy, per the design doc's operational model.
+full list (table names, blocklist paths, rate interval, discovery rate,
+Opteryx workspace/collection, PAT credentials). Nothing is hardcoded so schedule/rate/
+target changes don't need a redeploy, per the design doc's operational model - though
+that only holds for settings the instance's `/etc/ichnos/env` actually writes out
+(`user_data.sh.tftpl`). `ICHNOS_ZMAP_RATE_PPS` was the exception until it was added
+there: it was env-readable in `config.py` but never set, so changing the discovery rate
+meant reinstalling the package. Adding a setting to `config.py` alone is half the job.
 
 ## Tests
 

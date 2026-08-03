@@ -114,6 +114,13 @@ ICHNOS_SCHEDULE_TABLE='${schedule_table}'
 ICHNOS_CURRENT_STATE_TABLE='${current_state_table}'
 ICHNOS_VERSION_INDEX_TABLE='${version_index_table}'
 ICHNOS_RATE_INTERVAL_SECONDS=${rate_interval_seconds}
+# Set explicitly rather than left to config.py's own default, which is the whole point:
+# the discovery rate is the value most likely to be retuned, and until this line existed
+# changing it meant reinstalling the package from git on the instance - the one setting
+# that couldn't be adjusted the way config.py's docstring says they all can. Keep it in
+# step with scan_candidates_per_cron_tick (variables.tf): the two are sized together so
+# a run still fits the cron interval, and moving one alone changes how long a scan takes.
+ICHNOS_ZMAP_RATE_PPS=${zmap_rate_pps}
 ICHNOS_ZMAP_GATEWAY_MAC='$GATEWAY_MAC'
 ICHNOS_OPTERYX_WORKSPACE='${opteryx_workspace}'
 ICHNOS_OPTERYX_COLLECTION='${opteryx_collection}'
