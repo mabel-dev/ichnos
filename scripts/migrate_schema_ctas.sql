@@ -121,6 +121,35 @@ CREATE TABLE ichnos.landing.https AS SELECT * FROM ichnos.landing.https_temp;
 
 DROP TABLE ichnos.landing.https_temp;
 
+-- ---------------------------------------------------------------- clustering
+-- Run after the recreate - CREATE TABLE AS starts with no sort order, so a CLUSTER BY
+-- declared before the drop is lost with the old dataset.
+--
+-- Every one of these clusters on its instant. That is the column each dataset is
+-- actually range-scanned by, and the only one whose min/max row-group statistics can
+-- prune anything: rows arrive in time order, so consecutive row groups hold disjoint
+-- time ranges and a time-bounded query skips most of the file. It is also why none of
+-- these cluster on `fingerprint_id` despite it being the join key from `observations`
+-- into the protocol datasets - a sha256 is uniformly random, so every row group's
+-- min/max spans nearly the whole key space and prunes nothing. Equality lookups on
+-- fingerprint_id are already served by the bloom filters publish.py writes
+-- (write_parquet(..., bloom_filters=True)), which is the right structure for that
+-- access pattern.
+--
+-- Only the FIRST column is used today (catalog.compaction.normalize_sort_order takes
+-- it as the primary sort key and ignores the rest), so these are deliberately single
+-- column rather than a composite that would read as more than it delivers.
+--
+-- This declares the layout for compaction to converge on; it does not rewrite the
+-- existing files by itself.
+
+ALTER TABLE ichnos.landing.ssh CLUSTER BY (first_seen);
+ALTER TABLE ichnos.landing.http CLUSTER BY (first_seen);
+ALTER TABLE ichnos.landing.https CLUSTER BY (first_seen);
+ALTER TABLE ichnos.landing.versions CLUSTER BY (first_seen);
+ALTER TABLE ichnos.landing.observations CLUSTER BY (observed_at);
+ALTER TABLE ichnos.landing.scan_metadata CLUSTER BY (started_at);
+
 -- Optional, for the three JSON-document columns: type them for readers via a view,
 -- leaving the base tables VARCHAR so the hourly publish keeps working. The view's
 -- payload column reads back as NVARCHAR while the base table stays appendable.
