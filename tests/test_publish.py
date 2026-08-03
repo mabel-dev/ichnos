@@ -117,6 +117,29 @@ def test_publish_hour_raises_and_stops_on_inspect_issues(tmp_path):
         assert exc.dataset == "observations"
 
 
+def test_publish_hour_reports_each_commit_before_attempting_the_next(tmp_path):
+    """`on_commit` is what lets a caller clear only the datasets that actually landed.
+    Without it, a batch that failed partway through left the already-committed datasets
+    sitting in pending_dir, and the next cycle's retry committed them a second time -
+    duplicate rows for every dataset ordered before the failing one."""
+    client = FakeClient(fail_dataset="versions")
+    datasets = {"observations": [{"ip": "1.2.3.4"}], "versions": [{"fingerprint_id": "abc"}]}
+    committed = []
+
+    try:
+        publish_hour(
+            client, datasets, workspace="scan", collection="measurement", tmp_dir=str(tmp_path),
+            convert=fake_convert, on_commit=lambda name, result: committed.append(name),
+        )
+        raise AssertionError("expected PublishError")
+    except PublishError as exc:
+        assert exc.dataset == "versions"
+
+    # observations committed before versions failed - the caller has to be told, since
+    # the return value never arrives on this path.
+    assert committed == ["observations"]
+
+
 def test_pending_ndjson_roundtrip(tmp_path):
     pending_dir = str(tmp_path)
     append_ndjson(f"{pending_dir}/observations.ndjson", [{"a": 1}])

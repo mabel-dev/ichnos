@@ -4,6 +4,7 @@ Table layout matches the design doc exactly:
     Exclusions    PK ip_or_cidr
     ScanSchedule  PK protocol
     CurrentState  PK protocol#ip#port (see CurrentStateRecord.key)
+    VersionIndex  PK fingerprint_id
 
 Requires the `aws` extra (`pip install ichnos[aws]`) - boto3 is not a hard dependency
 so the rest of the package (blocklist building, fingerprinting, tests) works without it.
@@ -25,6 +26,7 @@ from .base import CurrentStateStore
 from .base import ExclusionStore
 from .base import ScheduleStore
 from .base import Store
+from .base import VersionIndexStore
 
 try:
     import boto3
@@ -181,6 +183,29 @@ class DynamoDBCurrentStateStore(CurrentStateStore):
         return int(response["Table"]["ItemCount"])
 
 
+class DynamoDBVersionIndexStore(VersionIndexStore):
+    def __init__(self, table_name: str, *, resource: Any = None):
+        _require_boto3()
+        self._table = (resource or boto3.resource("dynamodb")).Table(table_name)
+
+    def claim(self, fingerprint_id: str) -> bool:
+        # The conditional put IS the dedup - not a get-then-put, which would race two
+        # hosts serving the same brand-new payload into both emitting the row. DynamoDB
+        # evaluates the condition inside the write, so exactly one caller can win.
+        try:
+            self._table.put_item(
+                Item={"fingerprint_id": fingerprint_id, "claimed_at": _now_iso()},
+                ConditionExpression="attribute_not_exists(fingerprint_id)",
+            )
+        except self._table.meta.client.exceptions.ConditionalCheckFailedException:
+            return False
+        return True
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
 class DynamoDBStore(Store):
     def __init__(
         self,
@@ -188,6 +213,7 @@ class DynamoDBStore(Store):
         exclusions_table: str = "Exclusions",
         schedule_table: str = "ScanSchedule",
         current_state_table: str = "CurrentState",
+        version_index_table: str = "VersionIndex",
         resource: Any = None,
     ):
         _require_boto3()
@@ -195,3 +221,4 @@ class DynamoDBStore(Store):
         self.exclusions = DynamoDBExclusionStore(exclusions_table, resource=resource)
         self.schedule = DynamoDBScheduleStore(schedule_table, resource=resource)
         self.current_state = DynamoDBCurrentStateStore(current_state_table, resource=resource)
+        self.version_index = DynamoDBVersionIndexStore(version_index_table, resource=resource)

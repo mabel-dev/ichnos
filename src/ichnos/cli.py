@@ -85,6 +85,7 @@ def _build_store(backend: str, settings: Settings):
             exclusions_table=settings.exclusions_table,
             schedule_table=settings.schedule_table,
             current_state_table=settings.current_state_table,
+            version_index_table=settings.version_index_table,
         )
     raise ValueError(f"unknown store backend: {backend!r}")
 
@@ -199,6 +200,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
         blocklist_path=settings.blocklist_path,
         rate_limiter=rate_limiter,
         current_state=store.current_state,
+        version_index=store.version_index,
         target_ip=args.target,
         gateway_mac=settings.zmap_gateway_mac or None,
         cooldown_seconds=settings.zmap_cooldown_seconds,
@@ -238,6 +240,7 @@ def cmd_refresh(args: argparse.Namespace) -> int:
         blocklist_path=settings.blocklist_path,
         rate_limiter=rate_limiter,
         current_state=store.current_state,
+        version_index=store.version_index,
         user_agent=settings.scan_user_agent,
     )
     _write_pending_outcome(settings, outcome)
@@ -273,13 +276,21 @@ def cmd_publish(args: argparse.Namespace) -> int:
     )
     client = UploadClient(token=auth)
 
+    def _committed(dataset: str, commit) -> None:
+        # Clear this dataset's pending file the moment it lands, rather than clearing
+        # the whole batch after the loop. A dataset that failed still holds its file for
+        # the next cycle's retry; one that already committed must not be sent twice.
+        logger.info("%s: commit %s, %s rows", dataset, commit.commit_id, commit.rows_written)
+        clear_pending(settings.pending_dir, [dataset])
+
     try:
-        results = publish_hour(
+        publish_hour(
             client,
             datasets,
             workspace=settings.opteryx_workspace,
             collection=settings.opteryx_collection,
             tmp_dir=settings.publish_tmp_dir,
+            on_commit=_committed,
         )
     except PublishError as exc:
         logger.error("publish failed, leaving pending files in place for retry: %s", exc)
@@ -297,9 +308,6 @@ def cmd_publish(args: argparse.Namespace) -> int:
         )
         return 1
 
-    clear_pending(settings.pending_dir, list(datasets.keys()))
-    for dataset, commit in results.items():
-        logger.info("%s: commit %s, %s rows", dataset, commit.commit_id, commit.rows_written)
     return 0
 
 

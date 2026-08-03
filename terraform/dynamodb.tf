@@ -60,3 +60,28 @@ resource "aws_dynamodb_table" "current_state" {
   # in Opteryx if ever lost (design doc §12), and at MVP volume this table stays small
   # enough that the cost of PITR isn't worth it either way.
 }
+
+# Which fingerprints have ever had a Versions row published. Deliberately NOT folded
+# into CurrentState: that table answers "what is this host serving now?" and is keyed by
+# host, which is exactly the question that produced duplicate version rows when it was
+# used to answer "have we published this payload?" as well (see storage/base.py's
+# VersionIndexStore). One item per distinct fingerprint, written once, never updated.
+resource "aws_dynamodb_table" "version_index" {
+  name         = "VersionIndex"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "fingerprint_id"
+
+  attribute {
+    name = "fingerprint_id"
+    type = "S"
+  }
+
+  server_side_encryption {
+    enabled = true
+  }
+
+  # No PITR, and no TTL. Losing this table means already-published fingerprints get
+  # republished once each - duplicate rows, the exact bug it exists to prevent - so it
+  # must not expire items, but it is rebuildable from `ichnos.landing.versions` (a
+  # SELECT DISTINCT fingerprint_id load) rather than needing point-in-time recovery.
+}

@@ -76,7 +76,8 @@ def test_run_scan_builds_the_real_zmap_flags_not_blocklist():
     run_scan(
         scan_id="flag-test", protocol="http", port=80, zgrab2_module="http", seed=1,
         candidate_count=5, blocklist_path="/tmp/blocklist.conf", rate_limiter=limiter,
-        current_state=store.current_state, clock=_fixed_clock(),
+        current_state=store.current_state, version_index=store.version_index,
+        clock=_fixed_clock(),
         popen=_fake_popen([], calls),
     )
 
@@ -96,7 +97,8 @@ def test_run_scan_uses_the_native_rate_flag_as_an_integer():
     run_scan(
         scan_id="rate-test", protocol="http", port=80, zgrab2_module="http", seed=1,
         candidate_count=5, blocklist_path="/tmp/x", rate_limiter=limiter,
-        current_state=store.current_state, clock=_fixed_clock(),
+        current_state=store.current_state, version_index=store.version_index,
+        clock=_fixed_clock(),
         popen=_fake_popen([], calls),
     )
 
@@ -107,7 +109,8 @@ def test_run_scan_uses_the_native_rate_flag_as_an_integer():
     run_scan(
         scan_id="rate-test-2", protocol="http", port=80, zgrab2_module="http", seed=1,
         candidate_count=5, blocklist_path="/tmp/x", rate_limiter=limiter,
-        current_state=store.current_state, clock=_fixed_clock(),
+        current_state=store.current_state, version_index=store.version_index,
+        clock=_fixed_clock(),
         popen=_fake_popen([], calls), rate_pps=7,
     )
     assert calls[0][calls[0].index("--rate") + 1] == "7"
@@ -121,7 +124,8 @@ def test_run_scan_passes_max_targets_seed_and_cooldown():
     run_scan(
         scan_id="params-test", protocol="http", port=80, zgrab2_module="http", seed=99,
         candidate_count=40, blocklist_path="/tmp/x", rate_limiter=limiter,
-        current_state=store.current_state, clock=_fixed_clock(),
+        current_state=store.current_state, version_index=store.version_index,
+        clock=_fixed_clock(),
         popen=_fake_popen([], calls),
     )
 
@@ -143,7 +147,8 @@ def test_run_scan_overrides_the_output_filter_to_include_rst():
     run_scan(
         scan_id="filter-test", protocol="http", port=80, zgrab2_module="http", seed=1,
         candidate_count=5, blocklist_path="/tmp/x", rate_limiter=limiter,
-        current_state=store.current_state, clock=_fixed_clock(),
+        current_state=store.current_state, version_index=store.version_index,
+        clock=_fixed_clock(),
         popen=_fake_popen([], calls),
     )
 
@@ -159,7 +164,8 @@ def test_run_scan_passes_gateway_mac_when_given():
     run_scan(
         scan_id="gw-test", protocol="http", port=80, zgrab2_module="http", seed=1,
         candidate_count=2, blocklist_path="/tmp/x", rate_limiter=limiter,
-        current_state=store.current_state, clock=_fixed_clock(),
+        current_state=store.current_state, version_index=store.version_index,
+        clock=_fixed_clock(),
         popen=_fake_popen([], calls), gateway_mac="11:22:33:44:55:66",
     )
 
@@ -176,7 +182,8 @@ def test_run_scan_omits_gateway_mac_when_not_given():
     run_scan(
         scan_id="no-gw-test", protocol="http", port=80, zgrab2_module="http", seed=1,
         candidate_count=2, blocklist_path="/tmp/x", rate_limiter=limiter,
-        current_state=store.current_state, clock=_fixed_clock(),
+        current_state=store.current_state, version_index=store.version_index,
+        clock=_fixed_clock(),
         popen=_fake_popen([], calls),
     )
 
@@ -260,6 +267,7 @@ def test_run_scan_threads_the_user_agent_down_to_the_grab():
         blocklist_path="/tmp/blocklist.conf",
         rate_limiter=TokenBucket(0.001, burst=1),
         current_state=InMemoryStore().current_state,
+        version_index=InMemoryStore().version_index,
         run_command=run_command,
         target_ip="1.2.3.4",
         user_agent="ichnos/1.0 (+https://ichnos.online/responsible-scanning)",
@@ -294,7 +302,7 @@ def test_run_refresh_scan_threads_the_user_agent_down_to_the_grab():
         zgrab2_module="http",
         blocklist_path="/tmp/blocklist.conf",
         rate_limiter=TokenBucket(0.001, burst=1),
-        current_state=store.current_state,
+        current_state=store.current_state, version_index=store.version_index,
         run_command=run_command,
         user_agent="ichnos/1.0 (+https://ichnos.online/responsible-scanning)",
     )
@@ -354,7 +362,7 @@ def test_run_scan_records_observation_and_new_version_for_responsive_host():
         candidate_count=3,
         blocklist_path="/tmp/ichnos-test-blocklist.conf",
         rate_limiter=limiter,
-        current_state=store.current_state,
+        current_state=store.current_state, version_index=store.version_index,
         run_command=run_command,
         clock=_fixed_clock(),
         popen=_fake_popen(["203.0.113.5,synack"], []),
@@ -383,7 +391,8 @@ def test_run_scan_records_closed_for_rst_without_grabbing():
     outcome = run_scan(
         scan_id="rst-test", protocol="http", port=80, zgrab2_module="http", seed=1,
         candidate_count=1, blocklist_path="/tmp/x", rate_limiter=limiter,
-        current_state=store.current_state, run_command=run_command, clock=_fixed_clock(),
+        current_state=store.current_state, version_index=store.version_index,
+        run_command=run_command, clock=_fixed_clock(),
         popen=_fake_popen(["203.0.113.9,rst"], []),
     )
 
@@ -409,13 +418,15 @@ def test_run_scan_dedupes_unchanged_fingerprint_on_rerun():
     first = run_scan(
         scan_id="run-1", protocol="http", port=80, zgrab2_module="http", seed=42,
         candidate_count=3, blocklist_path="/tmp/x", rate_limiter=limiter,
-        current_state=store.current_state, run_command=run_command, clock=_fixed_clock(),
+        current_state=store.current_state, version_index=store.version_index,
+        run_command=run_command, clock=_fixed_clock(),
         popen=_fake_popen(["203.0.113.5,synack"], []),
     )
     second = run_scan(
         scan_id="run-2", protocol="http", port=80, zgrab2_module="http", seed=42,
         candidate_count=3, blocklist_path="/tmp/x", rate_limiter=limiter,
-        current_state=store.current_state, run_command=run_command, clock=_fixed_clock(),
+        current_state=store.current_state, version_index=store.version_index,
+        run_command=run_command, clock=_fixed_clock(),
         popen=_fake_popen(["203.0.113.5,synack"], []),
     )
 
@@ -431,7 +442,8 @@ def test_run_scan_no_responsive_hosts():
     outcome = run_scan(
         scan_id="empty-run", protocol="http", port=80, zgrab2_module="http", seed=1,
         candidate_count=5, blocklist_path="/tmp/x", rate_limiter=limiter,
-        current_state=store.current_state, clock=_fixed_clock(),
+        current_state=store.current_state, version_index=store.version_index,
+        clock=_fixed_clock(),
         popen=_fake_popen([], []),  # zmap streams nothing - no responses at all
     )
 
@@ -455,7 +467,8 @@ def test_run_scan_records_grab_failed_when_zgrab2_produces_nothing():
     outcome = run_scan(
         scan_id="grab-fail-test", protocol="http", port=80, zgrab2_module="http", seed=42,
         candidate_count=1, blocklist_path="/tmp/x", rate_limiter=limiter,
-        current_state=store.current_state, run_command=run_command, clock=_fixed_clock(),
+        current_state=store.current_state, version_index=store.version_index,
+        run_command=run_command, clock=_fixed_clock(),
         popen=_fake_popen(["203.0.113.5,synack"], []),
     )
 
@@ -477,7 +490,8 @@ def test_run_scan_ignores_unrecognized_classifications():
     outcome = run_scan(
         scan_id="weird-line-test", protocol="http", port=80, zgrab2_module="http", seed=1,
         candidate_count=1, blocklist_path="/tmp/x", rate_limiter=limiter,
-        current_state=store.current_state, run_command=run_command, clock=_fixed_clock(),
+        current_state=store.current_state, version_index=store.version_index,
+        run_command=run_command, clock=_fixed_clock(),
         popen=_fake_popen(["not,a,valid,line", "", "203.0.113.5,unknown-classification"], []),
     )
 
@@ -502,7 +516,8 @@ def test_run_scan_kills_the_zmap_process_if_still_running_after_its_exit_grace_p
     run_scan(
         scan_id="hang-test", protocol="http", port=80, zgrab2_module="http", seed=1,
         candidate_count=2, blocklist_path="/tmp/x", rate_limiter=limiter,
-        current_state=store.current_state, clock=_fixed_clock(), popen=popen,
+        current_state=store.current_state, version_index=store.version_index,
+        clock=_fixed_clock(), popen=popen,
     )
 
     # the fake process's wait() keeps raising TimeoutExpired (still running) even
@@ -530,7 +545,8 @@ def test_run_scan_does_not_kill_a_process_that_exits_promptly_after_streaming():
     run_scan(
         scan_id="normal-exit-test", protocol="http", port=80, zgrab2_module="http", seed=1,
         candidate_count=2, blocklist_path="/tmp/x", rate_limiter=limiter,
-        current_state=store.current_state, clock=_fixed_clock(), popen=popen,
+        current_state=store.current_state, version_index=store.version_index,
+        clock=_fixed_clock(), popen=popen,
     )
 
     assert not procs[0].killed
@@ -556,7 +572,8 @@ def test_run_scan_marks_status_failed_when_zmap_exits_non_zero(caplog):
         outcome = run_scan(
             scan_id="zmap-fail-test", protocol="http", port=80, zgrab2_module="http", seed=1,
             candidate_count=1600, blocklist_path="/tmp/x", rate_limiter=limiter,
-            current_state=store.current_state, clock=_fixed_clock(), popen=popen,
+            current_state=store.current_state, version_index=store.version_index,
+        clock=_fixed_clock(), popen=popen,
         )
 
     assert outcome.metadata.status == "failed"
@@ -573,7 +590,8 @@ def test_run_scan_status_stays_completed_when_zmap_exits_zero():
     outcome = run_scan(
         scan_id="zmap-ok-test", protocol="http", port=80, zgrab2_module="http", seed=1,
         candidate_count=2, blocklist_path="/tmp/x", rate_limiter=limiter,
-        current_state=store.current_state, clock=_fixed_clock(), popen=popen,
+        current_state=store.current_state, version_index=store.version_index,
+        clock=_fixed_clock(), popen=popen,
     )
 
     assert outcome.metadata.status == "completed"
@@ -602,7 +620,8 @@ def test_run_scan_target_ip_skips_discovery_and_grabs_directly():
         scan_id="target-test", protocol="http", port=80, zgrab2_module="http", seed=1,
         candidate_count=99,  # irrelevant in target_ip mode
         blocklist_path="/tmp/nonexistent-blocklist.conf", rate_limiter=limiter,
-        current_state=store.current_state, run_command=run_command, clock=_fixed_clock(),
+        current_state=store.current_state, version_index=store.version_index,
+        run_command=run_command, clock=_fixed_clock(),
         target_ip="1.1.1.1", popen=popen,
     )
 
@@ -644,7 +663,8 @@ def test_run_scan_normalizes_by_zgrab2_module_not_protocol_label():
     outcome = run_scan(
         scan_id="https-test", protocol="https", port=443, zgrab2_module="tls", seed=1,
         candidate_count=1, blocklist_path="/tmp/x", rate_limiter=limiter,
-        current_state=store.current_state, run_command=run_command, clock=_fixed_clock(),
+        current_state=store.current_state, version_index=store.version_index,
+        run_command=run_command, clock=_fixed_clock(),
         target_ip="1.1.1.1",
     )
 
@@ -670,7 +690,8 @@ def test_run_scan_target_ip_refuses_a_blocklisted_target(tmp_path):
     outcome = run_scan(
         scan_id="target-blocked-test", protocol="http", port=80, zgrab2_module="http", seed=1,
         candidate_count=1, blocklist_path=blocklist_path, rate_limiter=limiter,
-        current_state=store.current_state, run_command=run_command, clock=_fixed_clock(),
+        current_state=store.current_state, version_index=store.version_index,
+        run_command=run_command, clock=_fixed_clock(),
         target_ip="175.45.176.5",
     )
 
@@ -681,14 +702,19 @@ def test_run_scan_target_ip_refuses_a_blocklisted_target(tmp_path):
 
 
 def test_run_refresh_scan_regrabs_every_known_host():
-    zgrab_result = {
-        "data": {"http": {"result": {"response": {"status_code": 200, "headers": {}}}}}
-    }
     calls = []
 
     def run_command(cmd, input=None):
-        calls.append(input.strip())
-        return json.dumps(zgrab_result) + "\n"
+        ip = input.strip()
+        calls.append(ip)
+        # Distinct payload per host, so each one is genuinely a distinct fingerprint.
+        # If both served identical bodies they would share a single fingerprint and
+        # correctly yield only ONE version row between them - see
+        # test_refresh_publishes_one_version_row_for_a_payload_shared_across_hosts.
+        status = 200 if ip == "203.0.113.5" else 404
+        return json.dumps(
+            {"data": {"http": {"result": {"response": {"status_code": status, "headers": {}}}}}}
+        ) + "\n"
 
     store = InMemoryStore()
     store.current_state.put(
@@ -708,7 +734,8 @@ def test_run_refresh_scan_regrabs_every_known_host():
     outcome = run_refresh_scan(
         scan_id="refresh-test", protocol="http", port=80, zgrab2_module="http",
         blocklist_path="/tmp/nonexistent-blocklist.conf", rate_limiter=limiter,
-        current_state=store.current_state, run_command=run_command, clock=_fixed_clock(),
+        current_state=store.current_state, version_index=store.version_index,
+        run_command=run_command, clock=_fixed_clock(),
     )
 
     assert outcome.metadata.targets_attempted == 2
@@ -718,6 +745,56 @@ def test_run_refresh_scan_regrabs_every_known_host():
     # fingerprint differs from the stale "old"/"old2" values already on record, so both
     # count as a new version - this is exactly the drift-detection refresh exists for.
     assert len(outcome.new_versions) == 2
+
+
+def test_refresh_publishes_one_version_row_for_a_payload_shared_across_hosts():
+    """Regression test for the duplicate-rows bug. Dedup used to be keyed by host
+    (CurrentState), so N hosts serving one identical payload each appended their own
+    copy of the identical row to `versions` and to the protocol dataset - observed in
+    production as 23 rows for a single Akamai "Invalid URL" edge page, which then fanned
+    every Observation joined on fingerprint_id out into 23 duplicate result rows."""
+
+    def run_command(cmd, input=None):
+        # Same response body from every host - exactly what a CDN edge, a default nginx
+        # page or a shared appliance firmware looks like across thousands of addresses.
+        return json.dumps(
+            {"data": {"http": {"result": {"response": {"status_code": 400, "headers": {}}}}}}
+        ) + "\n"
+
+    store = InMemoryStore()
+    for ip in ("203.0.113.5", "203.0.113.9", "203.0.113.11"):
+        store.current_state.put(
+            CurrentStateRecord(
+                protocol="http", ip=ip, port=80, fingerprint_id="old",
+                last_seen_date="2026-07-01",
+            )
+        )
+    limiter = TokenBucket(0.001, burst=1)
+
+    outcome = run_refresh_scan(
+        scan_id="refresh-shared", protocol="http", port=80, zgrab2_module="http",
+        blocklist_path="/tmp/nonexistent-blocklist.conf", rate_limiter=limiter,
+        current_state=store.current_state, version_index=store.version_index,
+        run_command=run_command, clock=_fixed_clock(),
+    )
+
+    # Every host still gets its own Observation - that all three serve this payload is
+    # the actual measurement, and nothing about the fix may drop it.
+    assert len(outcome.observations) == 3
+    assert {o.ip for o in outcome.observations} == {
+        "203.0.113.5", "203.0.113.9", "203.0.113.11"
+    }
+    assert len({o.fingerprint_id for o in outcome.observations}) == 1
+
+    # ...but the payload is published once, so the join stays one-to-many.
+    assert len(outcome.new_versions) == 1
+
+    # And every host's CurrentState still tracks what it is actually serving now -
+    # publishing the version row only once must not leave two of them on the stale
+    # "old" fingerprint, or the next refresh would re-report them as drifted forever.
+    fp = outcome.observations[0].fingerprint_id
+    for ip in ("203.0.113.5", "203.0.113.9", "203.0.113.11"):
+        assert store.current_state.get("http", ip, 80).fingerprint_id == fp
 
 
 def test_run_refresh_scan_skips_a_host_that_is_now_blocklisted(tmp_path):
@@ -750,7 +827,8 @@ def test_run_refresh_scan_skips_a_host_that_is_now_blocklisted(tmp_path):
     outcome = run_refresh_scan(
         scan_id="refresh-blocked-test", protocol="http", port=80, zgrab2_module="http",
         blocklist_path=blocklist_path, rate_limiter=limiter,
-        current_state=store.current_state, run_command=run_command, clock=_fixed_clock(),
+        current_state=store.current_state, version_index=store.version_index,
+        run_command=run_command, clock=_fixed_clock(),
     )
 
     # both are still counted as attempted - the blocklisted one is just skipped, not
@@ -770,7 +848,8 @@ def test_run_refresh_scan_no_known_hosts():
     outcome = run_refresh_scan(
         scan_id="refresh-empty-test", protocol="http", port=80, zgrab2_module="http",
         blocklist_path="/tmp/nonexistent-blocklist.conf", rate_limiter=limiter,
-        current_state=store.current_state, run_command=run_command, clock=_fixed_clock(),
+        current_state=store.current_state, version_index=store.version_index,
+        run_command=run_command, clock=_fixed_clock(),
     )
 
     assert outcome.metadata.targets_attempted == 0

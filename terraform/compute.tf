@@ -21,6 +21,7 @@ locals {
     exclusions_table              = aws_dynamodb_table.exclusions.name
     schedule_table                = aws_dynamodb_table.scan_schedule.name
     current_state_table           = aws_dynamodb_table.current_state.name
+    version_index_table           = aws_dynamodb_table.version_index.name
     rate_interval_seconds         = var.rate_interval_seconds
     scan_candidates_per_cron_tick = var.scan_candidates_per_cron_tick
     opteryx_workspace             = var.opteryx_workspace

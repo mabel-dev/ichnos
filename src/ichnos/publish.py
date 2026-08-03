@@ -23,8 +23,10 @@ from dataclasses import dataclass
 from dataclasses import field
 from datetime import datetime
 from datetime import timezone
+from typing import Callable
 from typing import Dict
 from typing import List
+from typing import Optional
 
 from opteryx_upload import CommitResult
 from opteryx_upload import ConflictResolution
@@ -214,9 +216,15 @@ def read_pending_datasets(pending_dir: str) -> Dict[str, List[Dict]]:
 
 
 def clear_pending(pending_dir: str, dataset_names: List[str]) -> None:
-    """Remove pending files for datasets that were just committed successfully. Only
-    call this after `publish_hour` returns without raising - see module docstring on
-    why a failed batch should hold its files rather than lose them."""
+    """Remove pending files for datasets that have been committed successfully.
+
+    Call this per dataset as each one lands (`publish_hour`'s `on_commit` hook), not
+    once for the whole batch at the end. `publish_hour` commits datasets one at a time
+    and raises on the first failure, so a mid-loop failure leaves the datasets *before*
+    it already committed - clearing only on full success meant those committed rows sat
+    in `pending_dir` and were committed a second time by the next cycle's retry. The
+    module docstring's "hold the files and retry" rule is about not *losing* data on
+    failure; it was never meant to republish what already landed."""
     for name in dataset_names:
         path = os.path.join(pending_dir, f"{name}.ndjson")
         if os.path.exists(path):
@@ -231,11 +239,17 @@ def publish_hour(
     collection: str,
     tmp_dir: str,
     convert=convert_to_parquet,
+    on_commit: Optional[Callable[[str, CommitResult], None]] = None,
 ) -> Dict[str, CommitResult]:
     """Commit every non-empty dataset. Raises `PublishError` on the first dataset the
-    Upload Service flags via `inspect()` - callers should treat any exception here as
-    "nothing after this dataset was committed, retry the whole hour next cycle" rather
-    than trying to resume mid-batch."""
+    Upload Service flags via `inspect()`.
+
+    `on_commit(dataset, result)` fires immediately after each dataset commits, before
+    the next one is attempted - that's how a caller learns which datasets landed when a
+    later one raises. Without it the only signal was the return value, which never
+    arrives on the failure path, so a caller had no way to distinguish "committed" from
+    "not committed" among the datasets of a partially-failed batch (see `clear_pending`
+    on what that cost)."""
     os.makedirs(tmp_dir, exist_ok=True)
     results: Dict[str, CommitResult] = {}
 
@@ -259,5 +273,7 @@ def publish_hour(
             conflict_resolution=ConflictResolution.APPEND,
         )
         results[dataset] = commit
+        if on_commit is not None:
+            on_commit(dataset, commit)
 
     return results

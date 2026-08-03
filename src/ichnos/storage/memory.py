@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Dict
 from typing import List
 from typing import Optional
+from typing import Set
 
 from ..models import CurrentStateRecord
 from ..models import Exclusion
@@ -12,6 +13,7 @@ from .base import CurrentStateStore
 from .base import ExclusionStore
 from .base import ScheduleStore
 from .base import Store
+from .base import VersionIndexStore
 
 
 class _MemoryExclusionStore(ExclusionStore):
@@ -56,8 +58,20 @@ class _MemoryCurrentStateStore(CurrentStateStore):
         return len(self._rows)
 
 
+class _MemoryVersionIndexStore(VersionIndexStore):
+    def __init__(self) -> None:
+        self._seen: Set[str] = set()
+
+    def claim(self, fingerprint_id: str) -> bool:
+        if fingerprint_id in self._seen:
+            return False
+        self._seen.add(fingerprint_id)
+        return True
+
+
 class InMemoryStore(Store):
     def __init__(self) -> None:
         self.exclusions = _MemoryExclusionStore()
         self.schedule = _MemoryScheduleStore()
         self.current_state = _MemoryCurrentStateStore()
+        self.version_index = _MemoryVersionIndexStore()

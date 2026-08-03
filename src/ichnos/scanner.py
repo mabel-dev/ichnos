@@ -50,6 +50,7 @@ from .logging_setup import get_logger
 from .normalize import normalize
 from .ratelimit import TokenBucket
 from .storage.base import CurrentStateStore
+from .storage.base import VersionIndexStore
 
 logger = get_logger(__name__)
 
@@ -171,6 +172,7 @@ def _grab_and_record(
     blocklist_path: str,
     run_command: CommandRunner,
     current_state: CurrentStateStore,
+    version_index: VersionIndexStore,
     today: str,
     clock: Callable[[], datetime],
     outcome: ScanRunOutcome,
@@ -207,9 +209,10 @@ def _grab_and_record(
     fp_id = fingerprint_id(payload)
 
     current = current_state.get(protocol, ip, port)
-    is_new = current is None or current.fingerprint_id != fp_id
+    is_new_for_host = current is None or current.fingerprint_id != fp_id
     logger.info(
-        "scan %s: %s fingerprint=%s (%s)", scan_id, ip, fp_id, "new" if is_new else "unchanged",
+        "scan %s: %s fingerprint=%s (%s)",
+        scan_id, ip, fp_id, "new" if is_new_for_host else "unchanged",
     )
     observed_at = clock()
     outcome.observations.append(
@@ -224,27 +227,41 @@ def _grab_and_record(
         )
     )
 
-    if is_new:
-        outcome.new_versions.append(
-            (
-                protocol,
-                VersionRecord(
-                    fingerprint_id=fp_id,
-                    protocol=protocol,
-                    first_seen=observed_at,
-                    payload=payload,
-                ),
-            )
+    if not is_new_for_host:
+        return
+
+    current_state.put(
+        CurrentStateRecord(
+            protocol=protocol,
+            ip=ip,
+            port=port,
+            fingerprint_id=fp_id,
+            last_seen_date=today,
         )
-        current_state.put(
-            CurrentStateRecord(
-                protocol=protocol,
-                ip=ip,
-                port=port,
+    )
+
+    # Two separate questions, deliberately asked separately - conflating them was a real
+    # production bug. "Did this host change?" (above) is what CurrentState answers and
+    # what the Observation records. "Is this payload one we have never published?" is
+    # what the Version datasets need, and only version_index can answer it: the
+    # fingerprint hashes the payload alone, so thousands of hosts fronted by the same
+    # CDN share one fingerprint, and every one of them used to append its own duplicate
+    # copy of the identical row. See VersionIndexStore.claim.
+    if not version_index.claim(fp_id):
+        logger.info("scan %s: fingerprint=%s already published, no version row", scan_id, fp_id)
+        return
+
+    outcome.new_versions.append(
+        (
+            protocol,
+            VersionRecord(
                 fingerprint_id=fp_id,
-                last_seen_date=today,
-            )
+                protocol=protocol,
+                first_seen=observed_at,
+                payload=payload,
+            ),
         )
+    )
 
 
 PopenFactory = Callable[..., "subprocess.Popen"]
@@ -267,6 +284,7 @@ def _stream_discover_and_grab(
     max_targets: int,
     blocklist_path: str,
     current_state: CurrentStateStore,
+    version_index: VersionIndexStore,
     today: str,
     clock: Callable[[], datetime],
     outcome: ScanRunOutcome,
@@ -363,7 +381,8 @@ def _stream_discover_and_grab(
             _grab_and_record(
                 scan_id=scan_id, protocol=protocol, ip=ip, port=port,
                 zgrab2_module=zgrab2_module, blocklist_path=blocklist_path,
-                run_command=grab_run_command, current_state=current_state, today=today,
+                run_command=grab_run_command, current_state=current_state,
+                version_index=version_index, today=today,
                 clock=clock, outcome=outcome, metadata=metadata, user_agent=user_agent,
             )
     finally:
@@ -409,6 +428,7 @@ def run_scan(
     blocklist_path: str,
     rate_limiter: TokenBucket,
     current_state: CurrentStateStore,
+    version_index: VersionIndexStore,
     run_command: CommandRunner = _default_run_command,
     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     target_ip: Optional[str] = None,
@@ -453,7 +473,7 @@ def run_scan(
                 scan_id=scan_id, protocol=protocol, ip=target_ip, port=port,
                 zgrab2_module=zgrab2_module, blocklist_path=blocklist_path,
                 run_command=run_command,
-                current_state=current_state, today=today, clock=clock,
+                current_state=current_state, version_index=version_index, today=today, clock=clock,
                 outcome=outcome, metadata=metadata, user_agent=user_agent,
             )
         metadata.ended_at = clock()
@@ -463,7 +483,8 @@ def run_scan(
     _stream_discover_and_grab(
         scan_id=scan_id, protocol=protocol, port=port, zgrab2_module=zgrab2_module,
         seed=seed, max_targets=candidate_count, blocklist_path=blocklist_path,
-        current_state=current_state, today=today, clock=clock, outcome=outcome,
+        current_state=current_state, version_index=version_index,
+        today=today, clock=clock, outcome=outcome,
         metadata=metadata, gateway_mac=gateway_mac, cooldown_seconds=cooldown_seconds,
         rate_pps=rate_pps, grab_run_command=run_command, popen=popen,
         user_agent=user_agent,
@@ -486,6 +507,7 @@ def run_refresh_scan(
     blocklist_path: str,
     rate_limiter: TokenBucket,
     current_state: CurrentStateStore,
+    version_index: VersionIndexStore,
     run_command: CommandRunner = _default_run_command,
     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     user_agent: Optional[str] = None,
@@ -522,7 +544,8 @@ def run_refresh_scan(
         _grab_and_record(
             scan_id=scan_id, protocol=protocol, ip=record.ip, port=port,
             zgrab2_module=zgrab2_module, blocklist_path=blocklist_path,
-            run_command=run_command, current_state=current_state, today=today,
+            run_command=run_command, current_state=current_state,
+            version_index=version_index, today=today,
             clock=clock, outcome=outcome, metadata=metadata, user_agent=user_agent,
         )
 

@@ -44,6 +44,7 @@ data "aws_iam_policy_document" "scanner" {
       aws_dynamodb_table.exclusions.arn,
       aws_dynamodb_table.scan_schedule.arn,
       aws_dynamodb_table.current_state.arn,
+      aws_dynamodb_table.version_index.arn,
     ]
   }
 
