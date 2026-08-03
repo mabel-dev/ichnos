@@ -72,6 +72,21 @@ class Settings:
     # issues at 1pps - a data-driven increase, not a re-guess.
     zmap_rate_pps: int = 2
 
+    # User-Agent sent by ZGrab2's http module. AWS's network-scanning guidelines
+    # (repost.aws, "AWS Guidelines for network scanning") ask under their "identifiable"
+    # pillar that HTTP scanners carry "meaningful content in user agent strings, such as
+    # names from your public DNS zones or the URL for opt-out". ZGrab2's own default is
+    # a generic scanner string, which leaves an operator reading their access log with
+    # no route back to the opt-out page this project already publishes - the one place
+    # our transparency posture didn't reach the actual packets. Both the DNS zone and
+    # the opt-out URL are included; a few dozen bytes per request is not a real cost.
+    # HTTPS is scanned via ZGrab2's *tls* module, which sends no HTTP request at all,
+    # so this legitimately applies to the http module only (see scanner.py's grab_one).
+    scan_user_agent: str = (
+        "ichnos/1.0 (+https://ichnos.online/responsible-scanning; "
+        "opt-out https://ichnos.online/opt-out)"
+    )
+
     # Opteryx publish target (design doc §3.2)
     opteryx_workspace: str = "ichnos"
     opteryx_collection: str = "landing"
@@ -86,6 +101,17 @@ class Settings:
     # both are meant to be fetched standalone (not always via a browser following
     # relative links), so they need the real external URL, not a relative path.
     site_url: str = "https://ichnos.online"
+    # The scanner's own public identity, published on the site and in scanner.txt.
+    # Same AWS "identifiable" pillar as scan_user_agent above ("publishing scanning IP
+    # address ranges"): someone holding a probe in their firewall log can then confirm
+    # it's this project without having to think to do a reverse lookup first. The
+    # hostname is stable and known to this repo; the address is not (it's whatever EIP
+    # Terraform allocated), so it's set from the EIP by user_data. Comma-separated -
+    # one address today, but a fleet is the documented scaling direction. Empty means
+    # "not configured", and the page/scanner.txt name the hostname alone rather than
+    # printing a misleading blank.
+    site_scan_hostname: str = "scan.ichnos.online"
+    site_scan_source_ips: str = ""
     # True in the real deployment - nginx terminates TLS and reverse-proxies to this
     # app on loopback, so the opt-out form must read the client IP from the header
     # nginx sets, not request.client.host (see webapp/app.py's module docstring).
@@ -109,6 +135,7 @@ class Settings:
             zmap_gateway_mac=_env("ZMAP_GATEWAY_MAC", cls.zmap_gateway_mac),
             zmap_cooldown_seconds=_env_int("ZMAP_COOLDOWN_SECONDS", cls.zmap_cooldown_seconds),
             zmap_rate_pps=_env_int("ZMAP_RATE_PPS", cls.zmap_rate_pps),
+            scan_user_agent=_env("SCAN_USER_AGENT", cls.scan_user_agent),
             opteryx_workspace=_env("OPTERYX_WORKSPACE", cls.opteryx_workspace),
             opteryx_collection=_env("OPTERYX_COLLECTION", cls.opteryx_collection),
             opteryx_client_id=_env("OPTERYX_CLIENT_ID", cls.opteryx_client_id),
@@ -117,5 +144,7 @@ class Settings:
             site_contact_email=_env("SITE_CONTACT_EMAIL", cls.site_contact_email),
             site_form_secret=_env("SITE_FORM_SECRET", cls.site_form_secret),
             site_url=_env("SITE_URL", cls.site_url),
+            site_scan_hostname=_env("SITE_SCAN_HOSTNAME", cls.site_scan_hostname),
+            site_scan_source_ips=_env("SITE_SCAN_SOURCE_IPS", cls.site_scan_source_ips),
             trust_proxy_headers=_env("TRUST_PROXY_HEADERS", "") == "1",
         )

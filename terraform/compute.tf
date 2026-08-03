@@ -17,6 +17,7 @@ locals {
   user_data = templatefile("${path.module}/user_data.sh.tftpl", {
     region                        = var.aws_region
     eip_allocation_id             = aws_eip.scanner.id
+    scanner_public_ip             = aws_eip.scanner.public_ip
     exclusions_table              = aws_dynamodb_table.exclusions.name
     schedule_table                = aws_dynamodb_table.scan_schedule.name
     current_state_table           = aws_dynamodb_table.current_state.name

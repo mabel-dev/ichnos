@@ -90,23 +90,54 @@ ping -c 1 -W 2 "$GATEWAY_IP" > /dev/null 2>&1 || true
 GATEWAY_MAC=$(ip neigh show "$GATEWAY_IP" | awk '{print $5; exit}')
 
 mkdir -p /etc/ichnos
+# EVERY non-numeric value below is single-quoted, and it must stay that way. This file
+# is `source`d by bash (`set -a; . /etc/ichnos/env; set +a`) in every cron entry below
+# *and* read as a systemd EnvironmentFile (ichnos-web.service, below), so a bare
+# value is shell input in both places: a space silently truncates it (organisation_name
+# "Opteryx Ltd" would set ICHNOS_SITE_ORGANISATION=Opteryx and then try to run `Ltd`),
+# and a metacharacter like a parenthesis is a *syntax error* that aborts the source
+# outright - leaving every variable after it unset and every scan running with no
+# configuration at all. That is not theoretical: it already bit ICHNOS_SCAN_USER_AGENT
+# once, which is why that line was quoted first. Quoting the rest is the same fix
+# applied before the next free-text tfvar (organisation_name, project_name, and the
+# resource names derived from it) grows a space. Single quotes because they are the one
+# form bash and systemd's EnvironmentFile parser agree on: both strip them and both
+# treat the contents as literal, with no expansion and no escape processing (systemd's
+# SINGLE_QUOTE_VALUE state in src/basic/env-file.c has no escape sub-state, so unlike
+# its double-quote handling it matches bash exactly). The one thing
+# a single-quoted value cannot carry is a single quote itself - keep them out of these
+# values (none of the current ones has one).
 cat > /etc/ichnos/env <<EOF
-AWS_DEFAULT_REGION=${region}
-ICHNOS_EXCLUSIONS_TABLE=${exclusions_table}
-ICHNOS_SCHEDULE_TABLE=${schedule_table}
-ICHNOS_CURRENT_STATE_TABLE=${current_state_table}
+AWS_DEFAULT_REGION='${region}'
+ICHNOS_EXCLUSIONS_TABLE='${exclusions_table}'
+ICHNOS_SCHEDULE_TABLE='${schedule_table}'
+ICHNOS_CURRENT_STATE_TABLE='${current_state_table}'
 ICHNOS_RATE_INTERVAL_SECONDS=${rate_interval_seconds}
-ICHNOS_ZMAP_GATEWAY_MAC=$GATEWAY_MAC
-ICHNOS_OPTERYX_WORKSPACE=${opteryx_workspace}
-ICHNOS_OPTERYX_COLLECTION=${opteryx_collection}
-ICHNOS_OPTERYX_CLIENT_ID=$OPTERYX_CLIENT_ID
-ICHNOS_OPTERYX_CLIENT_SECRET=$OPTERYX_CLIENT_SECRET
-ICHNOS_SITE_ORGANISATION=${organisation_name}
-ICHNOS_SITE_CONTACT_EMAIL=${abuse_email}
-ICHNOS_SITE_URL=https://${domain_name}
+ICHNOS_ZMAP_GATEWAY_MAC='$GATEWAY_MAC'
+ICHNOS_OPTERYX_WORKSPACE='${opteryx_workspace}'
+ICHNOS_OPTERYX_COLLECTION='${opteryx_collection}'
+# Shell-expanded, not Terraform-templated - but the single quotes are written literally
+# into the file (they are inert inside an unquoted heredoc, so $VAR still expands), and
+# these two need them most: they come from Secrets Manager, so unlike everything else
+# here their contents are entirely outside this repo's control.
+ICHNOS_OPTERYX_CLIENT_ID='$OPTERYX_CLIENT_ID'
+ICHNOS_OPTERYX_CLIENT_SECRET='$OPTERYX_CLIENT_SECRET'
+ICHNOS_SITE_ORGANISATION='${organisation_name}'
+ICHNOS_SITE_CONTACT_EMAIL='${abuse_email}'
+ICHNOS_SITE_URL='https://${domain_name}'
+# Published on /responsible-scanning and /scanner.txt so anyone who sees a probe can
+# confirm the source - templated from the EIP rather than hardcoded in the repo, which
+# doesn't know what address Terraform allocated. Matches the PTR set on that same EIP.
+ICHNOS_SITE_SCAN_SOURCE_IPS='${scanner_public_ip}'
+ICHNOS_SITE_SCAN_HOSTNAME='scan.${domain_name}'
+# Sent on every HTTP grab (ZGrab2's http module only - the tls module makes no HTTP
+# request). Templated from domain_name for the same reason as the two above: config.py's
+# default hardcodes ichnos.online, which would be a lie under any other domain_name.
+# This is the value whose spaces and parentheses proved the rule at the top of the block.
+ICHNOS_SCAN_USER_AGENT='ichnos/1.0 (+https://${domain_name}/responsible-scanning; opt-out https://${domain_name}/opt-out)'
 ICHNOS_TRUST_PROXY_HEADERS=1
-ICHNOS_JURISDICTION_S3_BUCKET=${jurisdiction_s3_bucket}
-ICHNOS_JURISDICTION_S3_KEY=${jurisdiction_s3_key}
+ICHNOS_JURISDICTION_S3_BUCKET='${jurisdiction_s3_bucket}'
+ICHNOS_JURISDICTION_S3_KEY='${jurisdiction_s3_key}'
 EOF
 chmod 600 /etc/ichnos/env
 

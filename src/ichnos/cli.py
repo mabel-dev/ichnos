@@ -97,6 +97,13 @@ def _read_jurisdiction_cidrs(path: str) -> list:
         return []
 
 
+def _split_csv(value: str) -> list:
+    """Comma-separated env var -> list, dropping blanks so a trailing comma or an
+    unset-but-present variable yields [] rather than [""] (which would render as an
+    empty bullet on the public page)."""
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
 def _rebuild_blocklist(settings: Settings, store, *, extra_exclusions: Iterable[str] = ()) -> None:
     """Shared by `scan` and `refresh` - both need the current bogons+exclusions+
     jurisdiction blocklist rebuilt fresh before every run (an opt-out or jurisdiction
@@ -196,6 +203,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
         gateway_mac=settings.zmap_gateway_mac or None,
         cooldown_seconds=settings.zmap_cooldown_seconds,
         rate_pps=settings.zmap_rate_pps,
+        user_agent=settings.scan_user_agent,
     )
     _write_pending_outcome(settings, outcome)
 
@@ -230,6 +238,7 @@ def cmd_refresh(args: argparse.Namespace) -> int:
         blocklist_path=settings.blocklist_path,
         rate_limiter=rate_limiter,
         current_state=store.current_state,
+        user_agent=settings.scan_user_agent,
     )
     _write_pending_outcome(settings, outcome)
 
@@ -330,6 +339,9 @@ def cmd_serve(args: argparse.Namespace) -> int:
         form_secret=settings.site_form_secret,
         site_url=settings.site_url,
         trust_proxy_headers=settings.trust_proxy_headers,
+        scan_hostname=settings.site_scan_hostname,
+        scan_source_ips=_split_csv(settings.site_scan_source_ips),
+        scan_user_agent=settings.scan_user_agent,
     )
     app = create_app(store, site_config)
     uvicorn.run(app, host=args.host, port=args.port)

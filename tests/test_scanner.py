@@ -3,6 +3,8 @@ import subprocess
 from datetime import datetime
 from datetime import timezone
 
+import pytest
+
 from ichnos.models import CurrentStateRecord
 from ichnos.ratelimit import TokenBucket
 from ichnos.scanner import DEFAULT_ZMAP_COOLDOWN_SECONDS
@@ -195,6 +197,111 @@ def test_grab_one_uses_the_zgrab2_blocklist_flag():
 
     assert "--blocklist-file" in calls[0]
     assert "--blacklist-file" not in calls[0]
+
+
+def test_grab_one_sends_the_identifying_user_agent_for_http():
+    # AWS's network-scanning guidelines ask HTTP scanners to carry "meaningful content
+    # in user agent strings" so an operator reading their access log can identify the
+    # scanner and find the opt-out. ZGrab2's own default is generic, so this has to be
+    # passed explicitly - if it stops being passed, the probe becomes anonymous again.
+    calls = []
+
+    def run_command(cmd, input=None):
+        calls.append(cmd)
+        return ""
+
+    grab_one(
+        "1.2.3.4", 80, "http", "/tmp/blocklist.conf",
+        run_command=run_command, user_agent="ichnos/1.0 (+https://ichnos.online/x)",
+    )
+
+    assert "--user-agent" in calls[0]
+    assert calls[0][calls[0].index("--user-agent") + 1] == "ichnos/1.0 (+https://ichnos.online/x)"
+
+
+@pytest.mark.parametrize("module", ["tls", "ssh"])
+def test_grab_one_omits_user_agent_for_non_http_modules(module):
+    # --user-agent is a flag on ZGrab2's *http* module, not a global one. Passing it to
+    # `zgrab2 tls` or `zgrab2 ssh` is an unknown-flag error: the process exits non-zero
+    # having produced no output, which grab_one cannot distinguish from a target that
+    # simply didn't answer. That would silently turn every HTTPS and SSH grab into a
+    # "grab-failed" row - a total loss of two protocols, with nothing in the logs
+    # pointing at the cause. This is the guard against that.
+    calls = []
+
+    def run_command(cmd, input=None):
+        calls.append(cmd)
+        return ""
+
+    grab_one(
+        "1.2.3.4", 443, module, "/tmp/blocklist.conf",
+        run_command=run_command, user_agent="ichnos/1.0",
+    )
+
+    assert "--user-agent" not in calls[0]
+
+
+def test_run_scan_threads_the_user_agent_down_to_the_grab():
+    # The flag is only useful if it survives the whole call chain to the actual ZGrab2
+    # invocation - the parameter existing on run_scan() proves nothing on its own.
+    calls = []
+
+    def run_command(cmd, input=None):
+        calls.append(cmd)
+        return json.dumps({"data": {"http": {"result": {"response": {"status_code": 200}}}}})
+
+    run_scan(
+        scan_id="s1",
+        protocol="http",
+        port=80,
+        zgrab2_module="http",
+        seed=1,
+        candidate_count=1,
+        blocklist_path="/tmp/blocklist.conf",
+        rate_limiter=TokenBucket(0.001, burst=1),
+        current_state=InMemoryStore().current_state,
+        run_command=run_command,
+        target_ip="1.2.3.4",
+        user_agent="ichnos/1.0 (+https://ichnos.online/responsible-scanning)",
+    )
+
+    zgrab_calls = [c for c in calls if c[0] == "zgrab2"]
+    assert zgrab_calls, "expected a zgrab2 invocation"
+    assert "--user-agent" in zgrab_calls[0]
+
+
+def test_run_refresh_scan_threads_the_user_agent_down_to_the_grab():
+    # Same guarantee for the refresh path - it's a separate call chain, and it's the
+    # one that revisits the *same* hosts daily, so an unidentified probe there is the
+    # one an operator is most likely to notice repeatedly.
+    store = InMemoryStore()
+    store.current_state.put(
+        CurrentStateRecord(
+            protocol="http", ip="1.2.3.4", port=80,
+            fingerprint_id="old", last_seen_date="2025-01-01",
+        )
+    )
+    calls = []
+
+    def run_command(cmd, input=None):
+        calls.append(cmd)
+        return json.dumps({"data": {"http": {"result": {"response": {"status_code": 200}}}}})
+
+    run_refresh_scan(
+        scan_id="r1",
+        protocol="http",
+        port=80,
+        zgrab2_module="http",
+        blocklist_path="/tmp/blocklist.conf",
+        rate_limiter=TokenBucket(0.001, burst=1),
+        current_state=store.current_state,
+        run_command=run_command,
+        user_agent="ichnos/1.0 (+https://ichnos.online/responsible-scanning)",
+    )
+
+    zgrab_calls = [c for c in calls if c[0] == "zgrab2"]
+    assert zgrab_calls, "expected a zgrab2 invocation"
+    assert "--user-agent" in zgrab_calls[0]
 
 
 def test_default_run_command_logs_error_on_nonzero_exit(caplog):

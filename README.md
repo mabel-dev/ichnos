@@ -11,7 +11,10 @@ if you've noticed a connection from this project) &middot; **Abuse contact:**
 
 This project follows [ZMap's Scanning Best
 Practices](https://github.com/zmap/zmap/wiki/Scanning-Best-Practices) for rate
-limiting, target selection, and exclusion handling.
+limiting, target selection, and exclusion handling, and [AWS's guidelines for network
+scanning](https://repost.aws/articles/ARCz_zlQsaSemhaszZ5--YlA/aws-guidelines-for-network-scanning)
+for being observable, identifiable, and cooperative - see [Scanner
+identity](#scanner-identity) below.
 
 ## Scope (MVP)
 
@@ -134,6 +137,28 @@ Served by `ichnos serve` (`webapp/app.py`), same instance/IP that does the scann
 - `/scanner.txt` - informal, not a standard, but common practice among Internet
   measurement projects (Shodan, Censys publish similar).
 - `/opt-out` - self-service exclusion, takes effect before the next scheduled scan.
+
+## Scanner identity
+
+Probe traffic is attributable back to this project without the recipient having to
+guess, per AWS's network-scanning guidelines ("the scanner is identifiable"):
+
+- **User-Agent** - HTTP grabs carry `ichnos/1.0 (+<site>/responsible-scanning; opt-out
+  <site>/opt-out)` (`ICHNOS_SCAN_USER_AGENT`), so the opt-out route is visible in the
+  target's own access log rather than only to someone who thinks to do a reverse
+  lookup. ZGrab2's default is a generic scanner string. Applies to the **http module
+  only** - HTTPS is grabbed via the `tls` module, which sends no HTTP request, and
+  `--user-agent` is not a valid flag there (see `scanner.py`'s `grab_one`).
+- **Source address** - the scanner's Elastic IP and its `scan.<domain>` hostname are
+  published on `/responsible-scanning` and in `/scanner.txt`
+  (`ICHNOS_SITE_SCAN_SOURCE_IPS` / `ICHNOS_SITE_SCAN_HOSTNAME`, both templated from
+  the EIP by `terraform/user_data.sh.tftpl`, since the repo doesn't know the address).
+
+Not adopted: the guidelines also ask scanners to respect targets' `robots.txt`. This
+project doesn't fetch it - doing so would double the request count per target to obey a
+file that governs content crawling, while ichnos records only status code, headers, and
+`<title>` from a single handshake. That's a deliberate position, not an oversight; the
+deferred methodology page below is where it should be stated publicly.
 
 The scanner's Elastic IP also has a reverse-DNS PTR record (`scan.ichnos.online`,
 `terraform/dns.tf` + a one-time `aws ec2 modify-address-attribute` call documented in

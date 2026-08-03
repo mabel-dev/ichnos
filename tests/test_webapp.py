@@ -8,7 +8,7 @@ from ichnos.webapp import SiteConfig
 from ichnos.webapp import create_app
 
 
-def _client(*, trust_proxy_headers=False):
+def _client(*, trust_proxy_headers=False, scan_source_ips=("203.0.113.7",)):
     store = InMemoryStore()
     store.schedule.put(ScheduleEntry(protocol="http", port=80, zgrab2_module="http"))
     app = create_app(
@@ -17,6 +17,9 @@ def _client(*, trust_proxy_headers=False):
             form_secret="test-secret",
             contact_email="abuse@example.invalid",
             trust_proxy_headers=trust_proxy_headers,
+            scan_source_ips=list(scan_source_ips),
+            scan_hostname="scan.example.invalid",
+            scan_user_agent="ichnos/1.0 (+https://example.invalid/responsible-scanning)",
         ),
     )
     return TestClient(app), store
@@ -71,6 +74,60 @@ def test_scanner_txt_has_contact_and_opt_out():
     assert "Contact: abuse@example.invalid" in resp.text
     assert "/opt-out" in resp.text
     assert "/responsible-scanning" in resp.text
+
+
+def test_scanner_txt_publishes_the_scanner_identity():
+    # AWS's network-scanning guidelines ("identifiable") ask scanners to publish their
+    # sources so a target can verify a probe's authenticity. scanner.txt is the
+    # machine-readable half - what an automated abuse-triage pipeline would parse.
+    client, _ = _client()
+    resp = client.get("/scanner.txt")
+    assert "Source-IP: 203.0.113.7" in resp.text
+    assert "Source-Hostname: scan.example.invalid" in resp.text
+    assert "User-Agent: ichnos/1.0 (+https://example.invalid/responsible-scanning)" in resp.text
+
+
+def test_scanner_txt_omits_source_ip_when_not_configured():
+    # The address comes from the deployment's Elastic IP, so it's genuinely absent in
+    # dev/test. Better to publish no Source-IP line at all than an empty one that reads
+    # as "we scan from nowhere" to whoever's parsing it.
+    client, _ = _client(scan_source_ips=())
+    resp = client.get("/scanner.txt")
+    assert "Source-IP:" not in resp.text
+    assert "Source-Hostname: scan.example.invalid" in resp.text
+
+
+def test_responsible_scanning_page_publishes_the_scanner_identity():
+    # The human-readable half, for the operator who found the address in a firewall log
+    # and wants to confirm what it is before deciding whether to report it as abuse.
+    client, _ = _client()
+    resp = client.get("/responsible-scanning")
+    assert "203.0.113.7" in resp.text
+    assert "scan.example.invalid" in resp.text
+    assert "ichnos/1.0 (+https://example.invalid/responsible-scanning)" in resp.text
+
+
+def test_responsible_scanning_page_reads_correctly_without_configured_ips():
+    # The prose has to survive the address list being absent - it genuinely is in
+    # dev/test and on any deployment that hasn't set ICHNOS_SITE_SCAN_SOURCE_IPS.
+    client, _ = _client(scan_source_ips=())
+    resp = client.get("/responsible-scanning")
+    assert resp.status_code == 200
+    assert "Those addresses" not in resp.text
+    assert "Our scanning addresses reverse-resolve" in resp.text
+    assert "scan.example.invalid" in resp.text
+
+
+def test_responsible_scanning_page_cites_guidelines_without_claiming_endorsement():
+    # The AWS article is cited because a large share of scanned hosts are AWS-hosted
+    # and that article is where AWS directs customers to report abusive scanning - but
+    # it disclaims endorsement in its own text, so the page must not imply AWS has
+    # approved or reviewed this project.
+    client, _ = _client()
+    resp = client.get("/responsible-scanning")
+    assert "zmap/wiki/Scanning-Best-Practices" in resp.text
+    assert "aws-guidelines-for-network-scanning" in resp.text
+    assert "do not imply any endorsement" in resp.text
 
 
 def test_opt_out_form_renders_challenge_fields():

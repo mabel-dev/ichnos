@@ -113,6 +113,7 @@ def grab_one(
     blocklist_path: str,
     *,
     run_command: CommandRunner = _default_run_command,
+    user_agent: Optional[str] = None,
 ) -> Optional[dict]:
     """One ZGrab2 handshake against a single target. Returns the parsed `data.<module>`
     object, or None if ZGrab2 produced no parseable result.
@@ -123,11 +124,23 @@ def grab_one(
     resolve via `$HOME` (which isn't reliably set across every invocation context this
     runs in - cron, systemd, an ad-hoc shell - and produces a silent, unexplained
     "no result" if ZGrab2 can't find its default file at all, discovered exactly that
-    way against a real target)."""
-    output = run_command(
-        ["zgrab2", module, "--port", str(port), "--blocklist-file", blocklist_path],
-        f"{ip}\n",
-    )
+    way against a real target).
+
+    `user_agent` identifies the scanner to whoever reads their access log, per AWS's
+    network-scanning guidelines (see config.py's `scan_user_agent` for the rationale).
+    None means "don't pass the flag", leaving ZGrab2's own default - the identifying
+    string lives in config.py rather than being duplicated here, and `cli.py` always
+    supplies it on the real path."""
+    cmd = ["zgrab2", module, "--port", str(port), "--blocklist-file", blocklist_path]
+    if user_agent and module == "http":
+        # http-module-only, deliberately: --user-agent is a flag on ZGrab2's http
+        # module, not a global one. Passing it to `zgrab2 tls` or `zgrab2 ssh` is an
+        # unknown-flag error, so the process exits non-zero having produced nothing -
+        # which this function cannot distinguish from a target that simply didn't
+        # answer. Getting this wrong would silently turn every HTTPS and SSH grab
+        # into a "grab-failed" row rather than failing loudly.
+        cmd.extend(["--user-agent", user_agent])
+    output = run_command(cmd, f"{ip}\n")
     line = output.strip().splitlines()[0] if output.strip() else ""
     if not line:
         return None
@@ -161,11 +174,15 @@ def _grab_and_record(
     clock: Callable[[], datetime],
     outcome: ScanRunOutcome,
     metadata: ScanMetadataRecord,
+    user_agent: Optional[str] = None,
 ) -> None:
     """Do one ZGrab2 grab against an already-known-responsive `ip` and record the
     result - either a successful fingerprint, or (if ZGrab2 couldn't complete its own
     handshake) a `response_status="grab-failed"` row with no fingerprint."""
-    module_result = grab_one(ip, port, zgrab2_module, blocklist_path, run_command=run_command)
+    module_result = grab_one(
+        ip, port, zgrab2_module, blocklist_path,
+        run_command=run_command, user_agent=user_agent,
+    )
     if module_result is None:
         logger.info("scan %s: %s responded to discovery but zgrab2 produced no result", scan_id, ip)
         outcome.observations.append(
@@ -258,6 +275,7 @@ def _stream_discover_and_grab(
     rate_pps: int,
     grab_run_command: CommandRunner,
     popen: PopenFactory,
+    user_agent: Optional[str] = None,
 ) -> None:
     """One ZMap process, run for the whole scan window, streaming classified results as
     they arrive rather than hundreds of separate single-target invocations.
@@ -345,7 +363,7 @@ def _stream_discover_and_grab(
                 scan_id=scan_id, protocol=protocol, ip=ip, port=port,
                 zgrab2_module=zgrab2_module, blocklist_path=blocklist_path,
                 run_command=grab_run_command, current_state=current_state, today=today,
-                clock=clock, outcome=outcome, metadata=metadata,
+                clock=clock, outcome=outcome, metadata=metadata, user_agent=user_agent,
             )
     finally:
         watchdog.cancel()
@@ -397,6 +415,7 @@ def run_scan(
     cooldown_seconds: int = DEFAULT_ZMAP_COOLDOWN_SECONDS,
     rate_pps: int = DEFAULT_ZMAP_RATE_PPS,
     popen: PopenFactory = subprocess.Popen,
+    user_agent: Optional[str] = None,
 ) -> ScanRunOutcome:
     """Run one scan: either a native ZMap discovery pass covering up to
     `candidate_count` targets (ZMap's own `-n`), rate-limited via ZMap's own `--rate`,
@@ -434,7 +453,7 @@ def run_scan(
                 zgrab2_module=zgrab2_module, blocklist_path=blocklist_path,
                 run_command=run_command,
                 current_state=current_state, today=today, clock=clock,
-                outcome=outcome, metadata=metadata,
+                outcome=outcome, metadata=metadata, user_agent=user_agent,
             )
         metadata.ended_at = clock()
         metadata.status = "completed"
@@ -446,6 +465,7 @@ def run_scan(
         current_state=current_state, today=today, clock=clock, outcome=outcome,
         metadata=metadata, gateway_mac=gateway_mac, cooldown_seconds=cooldown_seconds,
         rate_pps=rate_pps, grab_run_command=run_command, popen=popen,
+        user_agent=user_agent,
     )
 
     metadata.ended_at = clock()
@@ -467,6 +487,7 @@ def run_refresh_scan(
     current_state: CurrentStateStore,
     run_command: CommandRunner = _default_run_command,
     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+    user_agent: Optional[str] = None,
 ) -> ScanRunOutcome:
     """Re-test every currently-known-responsive host for `protocol`, to detect drift
     (a server upgrade, a cert rotation, a new fingerprint) since it was last seen.
@@ -501,7 +522,7 @@ def run_refresh_scan(
             scan_id=scan_id, protocol=protocol, ip=record.ip, port=port,
             zgrab2_module=zgrab2_module, blocklist_path=blocklist_path,
             run_command=run_command, current_state=current_state, today=today,
-            clock=clock, outcome=outcome, metadata=metadata,
+            clock=clock, outcome=outcome, metadata=metadata, user_agent=user_agent,
         )
 
     metadata.ended_at = clock()

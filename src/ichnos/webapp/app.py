@@ -45,6 +45,15 @@ from ..models import ExclusionSource
 from ..storage.base import Store
 
 ZMAP_BEST_PRACTICES_URL = "https://github.com/zmap/zmap/wiki/Scanning-Best-Practices"
+AWS_SCANNING_GUIDELINES_URL = (
+    "https://repost.aws/articles/ARCz_zlQsaSemhaszZ5--YlA/aws-guidelines-for-network-scanning"
+)
+"""AWS Trust & Safety's network-scanning guidelines - cited on the Responsible Scanning
+page because a large share of scanned hosts are AWS-hosted, and that article is also
+where AWS directs customers to *report* abusive scanning. Someone may well arrive here
+having followed it. Cited strictly as guidance this project conforms to: the article
+disclaims endorsement in its own text, so nothing here may imply AWS approves, reviews,
+or is otherwise associated with this project."""
 
 
 @dataclass(frozen=True)
@@ -56,6 +65,16 @@ class SiteConfig:
     site_url: str = "https://ichnos.online"
     form_secret: str = "change-me-in-production"
     trust_proxy_headers: bool = False
+    # The scanner's own network identity, published so someone holding a probe in
+    # their firewall log can confirm it's this project directly, rather than having
+    # to think to run a reverse lookup on the source address first (AWS's network
+    # scanning guidelines, "identifiable": publish sources of scanning activity, and
+    # implement a verifiable process to confirm authenticity). The hostname is stable;
+    # `scan_source_ips` comes from the deployment's Elastic IP, so it's empty by
+    # default and the pages below name the hostname alone when it isn't configured.
+    scan_hostname: str = "scan.ichnos.online"
+    scan_source_ips: List[str] = field(default_factory=list)
+    scan_user_agent: str = ""
     # ~1 year out from when this was set - RFC 9116 expects security.txt to be
     # re-issued periodically; a hardcoded date with a manual renewal reminder is
     # proportionate here, not worth a scheduled job for one field.
@@ -166,6 +185,15 @@ def _security_txt(config: SiteConfig) -> str:
 
 
 def _scanner_txt(config: SiteConfig) -> str:
+    # Source-IP/Source-Hostname/User-Agent are the machine-readable half of the
+    # "identifiable" requirement - the same three facts the Responsible Scanning page
+    # states in prose, in the file an automated abuse-triage pipeline is more likely
+    # to actually parse.
+    identity = f"Source-Hostname: {config.scan_hostname}\n"
+    for ip in config.scan_source_ips:
+        identity += f"Source-IP: {ip}\n"
+    if config.scan_user_agent:
+        identity += f"User-Agent: {config.scan_user_agent}\n"
     return (
         f"# {config.project_name} - Internet measurement scanner\n"
         f"# {config.site_url}\n"
@@ -173,6 +201,7 @@ def _scanner_txt(config: SiteConfig) -> str:
         f"Contact: {config.contact_email}\n"
         f"Info: {config.site_url}/responsible-scanning\n"
         f"Opt-out: {config.site_url}/opt-out\n"
+        f"{identity}"
         f"Purpose: Internet measurement research (HTTP/HTTPS/SSH protocol metadata only "
         f"- no exploitation, authentication, or credential testing)\n"
         f"Source: {config.source_repo_url}\n"
@@ -236,11 +265,55 @@ See <a href="/opt-out">opt-out</a> below to request exclusion.</p>
             f"<tr><td>{html.escape(e.protocol)}</td><td>{e.port}</td></tr>" for e in schedule
         ) or "<tr><td colspan=2>No protocols currently enabled.</td></tr>"
 
+        # Deliberately the first section after the intro: the reader arriving here has
+        # an address in a log and wants to confirm it's us before reading anything
+        # else. Every scan originates from these addresses and no others.
+        ip_rows = "".join(
+            f"<li><code>{html.escape(ip)}</code></li>" for ip in config.scan_source_ips
+        )
+        # The follow-on sentence has to read correctly with *and* without the address
+        # list - it's genuinely absent in dev/test and on any deployment that hasn't
+        # set ICHNOS_SITE_SCAN_SOURCE_IPS, and "Those addresses..." following nothing
+        # at all is worse than not listing them.
+        if ip_rows:
+            source_ips_html = f"<p>All scanning originates from:</p><ul>{ip_rows}</ul>"
+            rdns_subject = "Those addresses reverse-resolve"
+        else:
+            source_ips_html = ""
+            rdns_subject = "Our scanning addresses reverse-resolve"
+        user_agent_html = (
+            f"<p>HTTP requests carry the User-Agent "
+            f"<code>{html.escape(config.scan_user_agent)}</code>.</p>"
+            if config.scan_user_agent else ""
+        )
+
         body = f"""
 <h1>Responsible Scanning</h1>
 <p>This page exists for anyone who has noticed a connection from
 {html.escape(config.project_name)} and wants to know what it is, why it happened, and
 how to stop it.</p>
+
+<h2>How to identify our traffic</h2>
+{source_ips_html}
+<p>{rdns_subject} to <code>{html.escape(config.scan_hostname)}</code>, so you can confirm
+a probe came from this project with a reverse DNS lookup on the source address - it will
+never resolve to a bare cloud-provider hostname.</p>
+{user_agent_html}
+<p>Anything claiming to be {html.escape(config.project_name)} from a different address
+is not this project. The same facts are published in machine-readable form at
+<a href="/scanner.txt">scanner.txt</a>.</p>
+
+<h2>Guidelines we follow</h2>
+<ul>
+  <li><a href="{ZMAP_BEST_PRACTICES_URL}">ZMap's Scanning Best Practices</a> - target
+  selection, rate limiting, and exclusion handling.</li>
+  <li><a href="{AWS_SCANNING_GUIDELINES_URL}">AWS's guidelines for network
+  scanning</a> - a scanner should be observable (no attempt to create, modify or delete
+  anything on the hosts it contacts), identifiable (see the section above), and
+  cooperative (rate-limited, with an opt-out that is honoured). These are published
+  guidelines that this project conforms to; they do not imply any endorsement of,
+  review of, or association with this project by AWS.</li>
+</ul>
 
 <h2>What we scan</h2>
 <table><tr><th>Protocol</th><th>Port</th></tr>{schedule_rows}</table>
@@ -275,9 +348,9 @@ sent.</p>
 (ZMap's own native rate limit), in short windows every 15 minutes - not a sustained
 flood, and a given address is essentially never sampled twice by discovery in any
 practical timeframe. Hosts already known to respond get a separate, single re-check
-once a day (a "refresh" pass) to detect changes, not repeated probing. See
-<a href="{ZMAP_BEST_PRACTICES_URL}">ZMap's Scanning Best Practices</a>, which this
-project follows for target selection, rate limiting, and exclusion handling.</p>
+once a day (a "refresh" pass) to detect changes, not repeated probing. Rates are set so
+that scanning does not measurably affect the responsiveness of the hosts contacted - see
+the guidelines above.</p>
 
 <h2>Contact and opt-out</h2>
 <p>Abuse or questions: <a href="mailto:{html.escape(config.contact_email)}">{html.escape(config.contact_email)}</a>.
