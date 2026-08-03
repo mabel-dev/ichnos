@@ -117,9 +117,17 @@ ICHNOS_ZMAP_GATEWAY_MAC='$GATEWAY_MAC'
 ICHNOS_OPTERYX_WORKSPACE='${opteryx_workspace}'
 ICHNOS_OPTERYX_COLLECTION='${opteryx_collection}'
 # Shell-expanded, not Terraform-templated - but the single quotes are written literally
-# into the file (they are inert inside an unquoted heredoc, so $VAR still expands), and
+# into the file (they are inert inside an unquoted heredoc, so \$VAR still expands), and
 # these two need them most: they come from Secrets Manager, so unlike everything else
 # here their contents are entirely outside this repo's control.
+#
+# The backslash on the line above is load-bearing, because these comment lines are not
+# shell comments - they are literal heredoc content, and the shell expands them on the
+# way through. An unescaped \$VAR is substituted like any other, and under set -u an
+# unset name is a fatal error rather than an empty string, which aborts the bootstrap
+# at the cat above and leaves a zero-byte env file. Backticks are barred for the same
+# reason: they are command substitution, not quoting, and a bare backtick-cat reads
+# stdin and hangs the boot outright. Both of those have now happened.
 ICHNOS_OPTERYX_CLIENT_ID='$OPTERYX_CLIENT_ID'
 ICHNOS_OPTERYX_CLIENT_SECRET='$OPTERYX_CLIENT_SECRET'
 ICHNOS_SITE_ORGANISATION='${organisation_name}'
