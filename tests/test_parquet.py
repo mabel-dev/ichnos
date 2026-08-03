@@ -92,6 +92,46 @@ def test_convert_to_parquet_writes_declared_timestamp_columns_as_timestamps(tmp_
     ]
 
 
+def test_convert_to_parquet_drops_columns_the_schema_does_not_declare(tmp_path):
+    # explicit_schema types the columns it names but reads undeclared keys through
+    # anyway, so a column dropped from SCHEMAS kept being published until the last row
+    # written by the old code drained - and every batch in between was rejected with
+    # "table structure doesn't match". favicon_hash and jarm are the real instances.
+    import rugo.parquet as rugo_parquet
+
+    ndjson_path = str(tmp_path / "in.ndjson")
+    parquet_path = str(tmp_path / "out.parquet")
+    with open(ndjson_path, "w") as f:
+        f.write(json.dumps({"server": "nginx", "favicon_hash": None, "status_code": 200}) + "\n")
+        f.write(json.dumps({"server": "apache", "favicon_hash": "abc", "status_code": 404}) + "\n")
+
+    convert_to_parquet(
+        ndjson_path, parquet_path, schema={"status_code": "int64", "server": "string"}
+    )
+
+    with rugo_parquet.read_parquet(parquet_path) as reader:
+        morsels = list(reader)
+    names = [
+        name.decode() if isinstance(name, bytes) else name for name in morsels[0].column_names
+    ]
+    # Declared columns only, in the order the schema declares them - not the key order
+    # of whichever row happened to be written first.
+    assert names == ["status_code", "server"]
+
+
+def test_convert_to_parquet_raises_when_a_declared_column_is_absent(tmp_path):
+    ndjson_path = str(tmp_path / "in.ndjson")
+    with open(ndjson_path, "w") as f:
+        f.write(json.dumps({"server": "nginx"}) + "\n")
+
+    with pytest.raises(RuntimeError, match="missing after read"):
+        convert_to_parquet(
+            ndjson_path,
+            str(tmp_path / "out.parquet"),
+            schema={"server": "string", "nope": "string"},
+        )
+
+
 def test_convert_to_parquet_types_an_all_null_timestamp_column_as_timestamp(tmp_path):
     # Same founding-batch property the string case above relies on, for the one column
     # that genuinely is null for whole batches: ended_at, when every scan in the hour
