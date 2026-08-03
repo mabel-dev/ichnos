@@ -23,6 +23,7 @@ locals {
     current_state_table           = aws_dynamodb_table.current_state.name
     version_index_table           = aws_dynamodb_table.version_index.name
     rate_interval_seconds         = var.rate_interval_seconds
+    zmap_rate_pps                 = var.zmap_rate_pps
     scan_candidates_per_cron_tick = var.scan_candidates_per_cron_tick
     opteryx_workspace             = var.opteryx_workspace
     opteryx_collection            = var.opteryx_collection

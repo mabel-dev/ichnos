@@ -111,9 +111,13 @@ or lets a run overrun into the next cron tick.
 ## Configuration
 
 All settings are environment variables, prefixed `ICHNOS_` - see `config.py` for the
-full list (table names, blocklist paths, rate interval, Opteryx workspace/collection,
-PAT credentials). Nothing is hardcoded so schedule/rate/target changes don't need a
-redeploy, per the design doc's operational model.
+full list (table names, blocklist paths, rate interval, discovery rate,
+Opteryx workspace/collection, PAT credentials). Nothing is hardcoded so schedule/rate/
+target changes don't need a redeploy, per the design doc's operational model - though
+that only holds for settings the instance's `/etc/ichnos/env` actually writes out
+(`user_data.sh.tftpl`). `ICHNOS_ZMAP_RATE_PPS` was the exception until it was added
+there: it was env-readable in `config.py` but never set, so changing the discovery rate
+meant reinstalling the package. Adding a setting to `config.py` alone is half the job.
 
 ## Tests
 
