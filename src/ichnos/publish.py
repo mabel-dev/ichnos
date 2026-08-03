@@ -47,10 +47,19 @@ from .scanner import ScanRunOutcome
 # rugo binary: an explicit-schema column that's all-null in the data still comes out
 # typed VARCHAR, not void. Any dataset not listed here falls back to rugo's own
 # per-batch inference (see parquet.convert_to_parquet).
+#
+# Every instant is declared "timestamp", not "string" - parquet.py turns those into
+# real TIMESTAMP64 columns (see its module docstring). They were all VARCHAR until
+# then: ISO-8601 text that reads like a timestamp in a query result but sorts, ranges
+# and windows as a string. `headers`/`certificate`/`payload` stay "string" despite
+# each holding a JSON document, because there is nothing else to declare them as -
+# draken has NVARCHAR and VARIANT types, but neither survives a Parquet round-trip
+# (rugo's writer emits byte_array/varchar for all three, and its reader tags them all
+# back as VARCHAR), so a JSON-typed column isn't expressible through the upload path.
 SCHEMAS: Dict[str, Dict[str, str]] = {
     "observations": {
         "scan_id": "string",
-        "observed_at": "string",
+        "observed_at": "timestamp",
         "ip": "string",
         "port": "int64",
         "protocol": "string",
@@ -60,8 +69,8 @@ SCHEMAS: Dict[str, Dict[str, str]] = {
     "scan_metadata": {
         "scan_id": "string",
         "protocol": "string",
-        "started_at": "string",
-        "ended_at": "string",
+        "started_at": "timestamp",
+        "ended_at": "timestamp",
         "targets_attempted": "int64",
         "hosts_responsive": "int64",
         "status": "string",
@@ -70,7 +79,7 @@ SCHEMAS: Dict[str, Dict[str, str]] = {
     "versions": {
         "fingerprint_id": "string",
         "protocol": "string",
-        "first_seen": "string",
+        "first_seen": "timestamp",
         "payload": "string",
     },
     "http": {
@@ -78,18 +87,16 @@ SCHEMAS: Dict[str, Dict[str, str]] = {
         "headers": "string",
         "server": "string",
         "title": "string",
-        "favicon_hash": "string",
         "redirect_location": "string",
         "fingerprint_id": "string",
-        "first_seen": "string",
+        "first_seen": "timestamp",
     },
     "https": {
         "version": "string",
         "cipher_suite": "string",
         "certificate": "string",
-        "jarm": "string",
         "fingerprint_id": "string",
-        "first_seen": "string",
+        "first_seen": "timestamp",
     },
     "ssh": {
         "banner": "string",
@@ -99,7 +106,7 @@ SCHEMAS: Dict[str, Dict[str, str]] = {
         "host_key_algorithm": "string",
         "host_key_fingerprint_sha256": "string",
         "fingerprint_id": "string",
-        "first_seen": "string",
+        "first_seen": "timestamp",
     },
 }
 

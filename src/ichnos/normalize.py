@@ -79,9 +79,14 @@ def normalize_http(http_result: Dict[str, Any]) -> Dict[str, Any]:
     """`http_result` is the `data.http` object from one ZGrab2 http-module result line.
 
     Spec fields covered: status code, headers, server, title, redirect location.
-    `favicon_hash` is intentionally left `None` - the plain `http` module doesn't fetch
-    /favicon.ico, that needs a dedicated follow-up request wired into the scanner. Not
-    faked here.
+
+    No `favicon_hash`: the plain `http` module doesn't fetch /favicon.ico, so this was
+    emitted as a hardcoded `None` on every row since the first scan - a column that is
+    null for 100% of published rows describes nothing, and one that's *always* null
+    also can't be told apart from one that's merely null so far. Reinstate it together
+    with the follow-up request that would actually populate it (a second fetch per
+    host, i.e. roughly double the request volume - a scan-rate decision, not a
+    normalizer one), not before.
 
     `headers` is serialized to a JSON string rather than returned as a native dict.
     Real, previously-undetected production bug: unlike `normalize_tls`'s `certificate`
@@ -140,7 +145,6 @@ def normalize_http(http_result: Dict[str, Any]) -> Dict[str, Any]:
         "headers": json.dumps(normalized_headers, sort_keys=True),
         "server": _first_or_none(normalized_headers.get("server")),
         "title": _extract_title(_get(response, "body")),
-        "favicon_hash": None,
         "redirect_location": _first_or_none(redirect_location),
     }
 
@@ -149,8 +153,13 @@ def normalize_tls(tls_result: Dict[str, Any]) -> Dict[str, Any]:
     """`tls_result` is the `data.tls` object from one ZGrab2 tls-module result line.
 
     Spec fields covered: protocol version, cipher suite, certificate metadata,
-    fingerprint. `jarm` is out of MVP scope - that's a separate ZGrab2 module
-    (`zgrab2 jarm`), not part of the plain `tls` handshake this design uses for HTTPS.
+    fingerprint.
+
+    No `jarm`: it's a separate ZGrab2 module (`zgrab2 jarm`), not part of the plain
+    `tls` handshake this design uses for HTTPS, so - like `normalize_http`'s
+    `favicon_hash` - it was a hardcoded `None` on every published row rather than a
+    field anything ever filled in. It comes back when the jarm module is actually wired
+    into the scanner.
 
     `certificate` is serialized to a JSON string rather than returned as a native
     dict, matching `normalize_http`'s `headers` fix and for the same reason: Opteryx's
@@ -180,7 +189,6 @@ def normalize_tls(tls_result: Dict[str, Any]) -> Dict[str, Any]:
         "version": _get(server_hello, "version", "name"),
         "cipher_suite": _get(server_hello, "cipher_suite", "name"),
         "certificate": json.dumps(certificate, sort_keys=True),
-        "jarm": None,
     }
 
 

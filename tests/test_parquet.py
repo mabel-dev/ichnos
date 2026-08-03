@@ -1,5 +1,9 @@
 import json
 import os
+from datetime import datetime
+from datetime import timezone
+
+import pytest
 
 from ichnos.parquet import _rugo_binary
 from ichnos.parquet import convert_to_parquet
@@ -59,6 +63,75 @@ def test_convert_to_parquet_with_schema_types_an_all_null_column_as_string_not_v
     schema = morsels[0].schema  # {column_name: DrakenType}
     assert schema["redirect_location"].name == "VARCHAR"
     assert schema["status_code"].name == "INT64"
+
+
+def test_convert_to_parquet_writes_declared_timestamp_columns_as_timestamps(tmp_path):
+    # The instants in every dataset (observed_at, first_seen, started_at, ended_at) are
+    # staged as isoformat() strings, and rugo's explicit_schema has no timestamp type -
+    # so without parquet.py's retyping step they publish as VARCHAR, which is exactly
+    # how they ended up in the catalog: text that looks like a timestamp but sorts and
+    # ranges as a string.
+    import rugo.parquet as rugo_parquet
+
+    ndjson_path = str(tmp_path / "in.ndjson")
+    parquet_path = str(tmp_path / "out.parquet")
+    with open(ndjson_path, "w") as f:
+        f.write(json.dumps({"started_at": "2026-08-03T12:00:00.123456+00:00", "seed": 1}) + "\n")
+        f.write(json.dumps({"started_at": "2026-08-03T13:00:00+00:00", "seed": 2}) + "\n")
+
+    convert_to_parquet(
+        ndjson_path, parquet_path, schema={"started_at": "timestamp", "seed": "int64"}
+    )
+
+    with rugo_parquet.read_parquet(parquet_path) as reader:
+        morsels = list(reader)
+    assert morsels[0].schema["started_at"].name == "TIMESTAMP64"
+    assert morsels[0].column("started_at").to_pylist() == [
+        datetime(2026, 8, 3, 12, 0, 0, 123456, tzinfo=timezone.utc),
+        datetime(2026, 8, 3, 13, 0, 0, tzinfo=timezone.utc),
+    ]
+
+
+def test_convert_to_parquet_types_an_all_null_timestamp_column_as_timestamp(tmp_path):
+    # Same founding-batch property the string case above relies on, for the one column
+    # that genuinely is null for whole batches: ended_at, when every scan in the hour
+    # failed. If an all-null batch created the table as void/VARCHAR, every later batch
+    # with a real end time would be rejected.
+    import rugo.parquet as rugo_parquet
+
+    ndjson_path = str(tmp_path / "in.ndjson")
+    parquet_path = str(tmp_path / "out.parquet")
+    with open(ndjson_path, "w") as f:
+        f.write(json.dumps({"ended_at": None}) + "\n")
+        f.write(json.dumps({"ended_at": None}) + "\n")
+
+    convert_to_parquet(ndjson_path, parquet_path, schema={"ended_at": "timestamp"})
+
+    with rugo_parquet.read_parquet(parquet_path) as reader:
+        morsels = list(reader)
+    assert morsels[0].schema["ended_at"].name == "TIMESTAMP64"
+    assert morsels[0].column("ended_at").to_pylist() == [None, None]
+
+
+def test_convert_to_parquet_rejects_an_unparseable_timestamp(tmp_path):
+    # Strict, matching rugo's own explicit-schema behaviour: a declared-type mismatch
+    # is a real data bug, not something to paper over by publishing it as a string.
+    ndjson_path = str(tmp_path / "in.ndjson")
+    parquet_path = str(tmp_path / "out.parquet")
+    with open(ndjson_path, "w") as f:
+        f.write(json.dumps({"observed_at": "not-a-timestamp"}) + "\n")
+
+    with pytest.raises(ValueError):
+        convert_to_parquet(ndjson_path, parquet_path, schema={"observed_at": "timestamp"})
+
+
+def test_convert_to_parquet_rejects_an_unknown_schema_type(tmp_path):
+    ndjson_path = str(tmp_path / "in.ndjson")
+    with open(ndjson_path, "w") as f:
+        f.write(json.dumps({"a": "x"}) + "\n")
+
+    with pytest.raises(ValueError, match="unsupported schema type"):
+        convert_to_parquet(ndjson_path, str(tmp_path / "out.parquet"), schema={"a": "nvarchar"})
 
 
 def test_convert_to_parquet_without_schema_falls_back_to_cli_inference(tmp_path):

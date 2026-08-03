@@ -20,7 +20,10 @@ def test_normalize_http_extracts_core_fields():
     assert out["status_code"] == 200
     assert out["server"] == "nginx"
     assert out["title"] == "Hello World"
-    assert out["favicon_hash"] is None
+    # No favicon_hash / jarm: both were hardcoded None on every row (nothing populates
+    # them), so they published as columns that were null 100% of the time. See the
+    # normalizers' docstrings for what reinstating each one would take.
+    assert "favicon_hash" not in out
 
 
 def test_normalize_http_headers_is_a_json_string_not_a_native_dict():
@@ -144,7 +147,6 @@ def test_normalize_http_handles_missing_fields_gracefully():
         "headers": "{}",
         "server": None,
         "title": None,
-        "favicon_hash": None,
         "redirect_location": None,
     }
 
@@ -180,7 +182,7 @@ def test_normalize_tls_extracts_core_fields():
     assert certificate["subject_cn"] == "example.com"
     assert certificate["issuer_cn"] == "Let's Encrypt"
     assert certificate["fingerprint_sha256"] == "deadbeef"
-    assert out["jarm"] is None
+    assert "jarm" not in out
 
 
 def test_normalize_tls_handles_missing_fields_gracefully():
