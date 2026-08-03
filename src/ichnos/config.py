@@ -76,7 +76,21 @@ class Settings:
     # full 30s zgrab2 timeout finished within 0.1s of the two that did not - so grab
     # time is absorbed inside the paced discovery loop rather than added to it, and
     # doubling the hit count does not spend the cron-interval buffer.
-    zmap_rate_pps: int = 4
+    #
+    # 8pps is a requested throughput increase rather than a further data-driven one -
+    # the measurements above were taken at 2pps and validated the 4pps step, and no
+    # equivalent observation window has been run at 4pps yet. The arithmetic it rests on
+    # is unchanged (candidates double alongside the rate, so a run is still ~803s), but
+    # the thing to actually watch is the grab backlog, not the discovery pace: ZMap
+    # itself still finishes on schedule regardless of what we're doing, while grabs are
+    # serial in the reader loop at up to 30s each on timeout. At 6400 candidates and the
+    # observed ~0.3-0.6% hit rate that's ~19-38 grabs per run, so a run where an unusual
+    # share of them time out can now, arithmetically, outlast the ~800s discovery window
+    # in a way it couldn't at 3200 candidates. That degrades to a skipped tick via the
+    # flock guard (user_data.sh.tftpl), not to overlapping runs - but a rising count of
+    # skipped ticks is the signal that this rate is too fast, and it's worth checking
+    # before assuming this step landed as cleanly as the last two.
+    zmap_rate_pps: int = 8
 
     # User-Agent sent by ZGrab2's http module. AWS's network-scanning guidelines
     # (repost.aws, "AWS Guidelines for network scanning") ask under their "identifiable"
