@@ -69,8 +69,13 @@ class Settings:
     # floor) deliberately, to observe real production behaviour before committing to
     # anything faster; raised to 2pps once that observation period showed a low,
     # stable hit rate (~0.3-0.6% new fingerprints per candidate) and no operational
-    # issues at 1pps - a data-driven increase, not a re-guess.
-    zmap_rate_pps: int = 2
+    # issues at 1pps - a data-driven increase, not a re-guess. Raised again to 4pps on
+    # the same basis, after two clean hours at 2pps: every completed run measured
+    # 804.2-804.3s against the 803s the model predicts, and the one run that absorbed a
+    # full 30s zgrab2 timeout finished within 0.1s of the two that did not - so grab
+    # time is absorbed inside the paced discovery loop rather than added to it, and
+    # doubling the hit count does not spend the cron-interval buffer.
+    zmap_rate_pps: int = 4
 
     # User-Agent sent by ZGrab2's http module. AWS's network-scanning guidelines
     # (repost.aws, "AWS Guidelines for network scanning") ask under their "identifiable"

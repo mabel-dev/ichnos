@@ -52,9 +52,9 @@ variable "rate_interval_seconds" {
 }
 
 variable "scan_candidates_per_cron_tick" {
-  description = "Candidates per `ichnos scan` invocation - sized so one run takes roughly as long as the cron interval between invocations (see cli.py's module docstring). Native ZMap discovery runs at config.py's zmap_rate_pps (2 pps as of the post-observation increase - see its docstring), so one run takes roughly `candidates / rate_pps + cooldown_seconds` - at the defaults, 1600 candidates takes ~803s (~13.4 min), the same real-but-thin buffer inside the 15-minute cron interval as the original 800-candidates-at-1pps sizing (doubling both candidates and rate leaves runtime unchanged). The scan cron entries are flock-guarded (user_data.sh.tftpl) specifically so an occasional overrun past that buffer degrades to a skipped tick, never an overlapping concurrent run."
+  description = "Candidates per `ichnos scan` invocation - sized so one run takes roughly as long as the cron interval between invocations (see cli.py's module docstring). Native ZMap discovery runs at config.py's zmap_rate_pps (4 pps as of the second post-observation increase - see its docstring), so one run takes roughly `candidates / rate_pps + cooldown_seconds` - at the defaults, 3200 candidates takes ~803s (~13.4 min), the same real-but-thin buffer inside the 15-minute cron interval as the 1600-at-2pps and original 800-at-1pps sizings (doubling both candidates and rate leaves runtime unchanged - measured at 2pps, where every completed run came in at 804.2-804.3s against the predicted 803s). The scan cron entries are flock-guarded (user_data.sh.tftpl) specifically so an occasional overrun past that buffer degrades to a skipped tick, never an overlapping concurrent run."
   type        = number
-  default     = 1600
+  default     = 3200
 }
 
 variable "ichnos_git_url" {

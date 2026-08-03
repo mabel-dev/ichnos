@@ -15,9 +15,10 @@ Rate is expressed in whole packets/second (`--rate` doesn't accept fractional va
 confirmed against the real binary, not assumed) - 1 pps is the practical floor. Deployed
 at 1pps first, deliberately, to observe real production behaviour before going any
 faster; raised to 2pps (see config.py's zmap_rate_pps) once that observation period
-showed a low, stable hit rate and no operational issues - a data-driven increase, not a
-re-guess. Both are far looser than this project's original "one request per 5 seconds"
-MVP figure, which was our own conservatism, not a hard requirement.
+showed a low, stable hit rate and no operational issues, then to 4pps after two clean
+hours of measured runs at 2pps - data-driven increases, not re-guesses. All three are
+far looser than this project's original "one request per 5 seconds" MVP figure, which
+was our own conservatism, not a hard requirement.
 
 Running this for real requires the `zmap` and `zgrab2` binaries installed and zmap
 running with raw-socket privileges (root, or `cap_net_raw+eip` on the binary) - not
