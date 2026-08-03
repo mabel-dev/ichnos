@@ -96,6 +96,30 @@ resource "aws_autoscaling_group" "scanner" {
     version = aws_launch_template.scanner.latest_version
   }
 
+  # Without this, pointing the ASG at a new launch template version changes nothing
+  # about the instance already running - `apply` reports success, the scanner keeps
+  # running whatever it booted with, and the drift is invisible unless someone thinks
+  # to compare the instance's launch template version against the group's. That is not
+  # hypothetical: the 8pps/6400 change found this instance three versions behind (16
+  # against the group's 17), so some earlier user_data change had silently never taken
+  # effect either. Every setting that reaches the worker does so through user_data (the
+  # env file and the cron entries it writes), so "launch template updated" has to mean
+  # "instance rebuilt" or an apply is only half a deployment.
+  #
+  # min_healthy_percentage = 0 because the group is a single instance: any higher and
+  # the refresh cannot start, since taking the one instance out of service necessarily
+  # drops health to 0%. That means a real gap in scanning while the replacement runs
+  # user_data - a few missed 15-minute ticks, which is the accepted trade for this
+  # deployment (design doc §12 puts multi-instance availability out of MVP scope).
+  # Publish runs hourly, so pending NDJSON on the old root volume is lost on refresh;
+  # run `ichnos publish` first when a tick's results matter.
+  instance_refresh {
+    strategy = "Rolling"
+    preferences {
+      min_healthy_percentage = 0
+    }
+  }
+
   tag {
     key                 = "Name"
     value               = "${var.project_name}-scanner"
