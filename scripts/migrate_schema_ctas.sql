@@ -27,7 +27,7 @@
 -- See the note at the bottom for the view-based alternative that types them for
 -- readers without breaking the writer.
 
-CREATE TABLE ichnos.landing.observations_v2 AS
+CREATE OR REPLACE TABLE ichnos.landing.observations AS
 SELECT scan_id,
        CAST(REPLACE(observed_at, '+00:00', '') AS TIMESTAMP) AS observed_at,
        ip,
@@ -37,7 +37,7 @@ SELECT scan_id,
        fingerprint_id
   FROM ichnos.landing.observations;
 
-CREATE TABLE ichnos.landing.scan_metadata_v2 AS
+CREATE OR REPLACE TABLE ichnos.landing.scan_metadata AS
 SELECT scan_id,
        protocol,
        CAST(REPLACE(started_at, '+00:00', '') AS TIMESTAMP) AS started_at,
@@ -48,7 +48,7 @@ SELECT scan_id,
        seed
   FROM ichnos.landing.scan_metadata;
 
-CREATE TABLE ichnos.landing.versions_v2 AS
+CREATE OR REPLACE TABLE ichnos.landing.versions AS
 SELECT fingerprint_id,
        protocol,
        CAST(REPLACE(first_seen, '+00:00', '') AS TIMESTAMP) AS first_seen,
@@ -57,7 +57,7 @@ SELECT fingerprint_id,
 
 -- favicon_hash dropped: the plain zgrab2 http module never fetched /favicon.ico, so it
 -- was a hardcoded None on every row ever published.
-CREATE TABLE ichnos.landing.http_v2 AS
+CREATE OR REPLACE TABLE ichnos.landing.http AS
 SELECT status_code,
        headers,
        server,
@@ -68,7 +68,7 @@ SELECT status_code,
   FROM ichnos.landing.http;
 
 -- jarm dropped: separate zgrab2 module, never wired into the scanner, same story.
-CREATE TABLE ichnos.landing.https_v2 AS
+CREATE OR REPLACE TABLE ichnos.landing.https AS
 SELECT version,
        cipher_suite,
        certificate,
@@ -76,7 +76,7 @@ SELECT version,
        CAST(REPLACE(first_seen, '+00:00', '') AS TIMESTAMP) AS first_seen
   FROM ichnos.landing.https;
 
-CREATE TABLE ichnos.landing.ssh_v2 AS
+CREATE OR REPLACE TABLE ichnos.landing.ssh AS
 SELECT banner,
        version,
        software,
@@ -87,11 +87,11 @@ SELECT banner,
        CAST(REPLACE(first_seen, '+00:00', '') AS TIMESTAMP) AS first_seen
   FROM ichnos.landing.ssh;
 
--- Then, once each _v2 has been spot-checked against its source (row counts, and that
--- no instant came back NULL that wasn't NULL before), drop the originals and rename.
--- The worker publishes to the names in config, so the cutover has to land between two
--- hourly publishes - or point the worker at the _v2 names and retire the originals
--- afterwards, which needs no drop/rename window at all.
+-- CREATE OR REPLACE replaces each dataset in place, reading from the same name it
+-- writes - verified working, rows preserved, column type changed. That leaves the
+-- names the worker already publishes to, so there is no rename and no config repoint.
+-- The tradeoff is that the pre-migration table is gone once each statement commits:
+-- check the SELECT half on its own first if you want a look before committing to it.
 
 -- Optional, for the three JSON-document columns: type them for readers via a view,
 -- leaving the base tables VARCHAR so the hourly publish keeps working. Verified: the
@@ -99,4 +99,4 @@ SELECT banner,
 --
 -- CREATE VIEW ichnos.landing.versions_typed AS
 -- SELECT fingerprint_id, protocol, first_seen, CAST(payload AS NVARCHAR) AS payload
---   FROM ichnos.landing.versions_v2;
+--   FROM ichnos.landing.versions;
