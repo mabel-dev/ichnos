@@ -1,12 +1,23 @@
--- One-off CTAS migration: rewrite each published dataset with its instants as real
+-- One-off migration: rewrite each published dataset with its instants as real
 -- TIMESTAMP columns, and drop the two columns that were null on 100% of rows.
 --
--- Run this ONLY after the worker fix (publish.py's "timestamp" schema types +
--- parquet.py's retyping) is deployed. Verified against opteryx 0.9.49: an INSERT of a
+-- Four statements per dataset. CREATE OR REPLACE does not update the catalog schema -
+-- the data is rewritten but the column types stay as they were - so the old dataset
+-- has to be dropped outright and recreated from a temp table that already carries the
+-- right types:
+--
+--   1. CREATE the temp from the original, applying the casts
+--   2. DROP the original
+--   3. CREATE the original from the temp (plain SELECT * - types already correct)
+--   4. DROP the temp
+--
+-- Run this ONLY with the publish cron paused, and only after the worker deploy. The
+-- worker and the tables have to agree on type in the same window: an INSERT of a
 -- VARCHAR source into a TIMESTAMP target is rejected outright
 --     UnsupportedSyntaxError: INSERT type mismatch on column 'first_seen':
 --     source VARCHAR is not compatible with target LogicalCategory.TIMESTAMP
--- so migrating first and deploying second breaks every hourly publish in between.
+-- and the reverse fails the same way. Between step 2 and step 3 the dataset does not
+-- exist at all, which is the other reason nothing may be publishing.
 --
 -- Why REPLACE(...,'+00:00','') rather than a bare CAST: every value was written by
 -- `datetime.isoformat()` on a UTC-aware datetime, so they all carry a `+00:00` offset -
@@ -19,83 +30,100 @@
 -- finished) pass through as NULL.
 --
 -- headers / certificate / payload stay VARCHAR despite each holding a JSON document.
--- CAST(... AS NVARCHAR) does work here and does survive into the catalog - but rugo's
--- Parquet writer can only emit VARCHAR, so the hourly publish would then be rejected
--- the same way the timestamp case above is:
+-- CAST(... AS NVARCHAR) does work and does stick, but rugo's Parquet writer can only
+-- emit VARCHAR, so the hourly publish would then be rejected the same way:
 --     INSERT type mismatch on column 'payload': source VARCHAR is not compatible
 --     with target LogicalCategory.NVARCHAR
--- See the note at the bottom for the view-based alternative that types them for
--- readers without breaking the writer.
+-- See the note at the bottom for the view-based alternative.
+--
+-- Do ssh first and confirm it comes back with first_seen typed TIMESTAMP before
+-- running the rest - it is the smallest dataset and proves the drop/recreate cycle
+-- against the real catalog (in particular that the name is immediately reusable after
+-- a DROP, rather than held by a tombstone).
 
-CREATE OR REPLACE TABLE ichnos.landing.observations AS
+-- ---------------------------------------------------------------- ssh
+CREATE TABLE ichnos.landing.ssh_temp AS
+SELECT banner, version, software, comment, host_key_algorithm,
+       host_key_fingerprint_sha256, fingerprint_id,
+       CAST(REPLACE(first_seen, '+00:00', '') AS TIMESTAMP) AS first_seen
+  FROM ichnos.landing.ssh;
+
+DROP TABLE ichnos.landing.ssh;
+
+CREATE TABLE ichnos.landing.ssh AS SELECT * FROM ichnos.landing.ssh_temp;
+
+DROP TABLE ichnos.landing.ssh_temp;
+
+-- ---------------------------------------------------------------- observations
+CREATE TABLE ichnos.landing.observations_temp AS
 SELECT scan_id,
        CAST(REPLACE(observed_at, '+00:00', '') AS TIMESTAMP) AS observed_at,
-       ip,
-       port,
-       protocol,
-       response_status,
-       fingerprint_id
+       ip, port, protocol, response_status, fingerprint_id
   FROM ichnos.landing.observations;
 
-CREATE OR REPLACE TABLE ichnos.landing.scan_metadata AS
-SELECT scan_id,
-       protocol,
+DROP TABLE ichnos.landing.observations;
+
+CREATE TABLE ichnos.landing.observations AS SELECT * FROM ichnos.landing.observations_temp;
+
+DROP TABLE ichnos.landing.observations_temp;
+
+-- ---------------------------------------------------------------- scan_metadata
+CREATE TABLE ichnos.landing.scan_metadata_temp AS
+SELECT scan_id, protocol,
        CAST(REPLACE(started_at, '+00:00', '') AS TIMESTAMP) AS started_at,
        CAST(REPLACE(ended_at, '+00:00', '') AS TIMESTAMP) AS ended_at,
-       targets_attempted,
-       hosts_responsive,
-       status,
-       seed
+       targets_attempted, hosts_responsive, status, seed
   FROM ichnos.landing.scan_metadata;
 
-CREATE OR REPLACE TABLE ichnos.landing.versions AS
-SELECT fingerprint_id,
-       protocol,
+DROP TABLE ichnos.landing.scan_metadata;
+
+CREATE TABLE ichnos.landing.scan_metadata AS SELECT * FROM ichnos.landing.scan_metadata_temp;
+
+DROP TABLE ichnos.landing.scan_metadata_temp;
+
+-- ---------------------------------------------------------------- versions
+CREATE TABLE ichnos.landing.versions_temp AS
+SELECT fingerprint_id, protocol,
        CAST(REPLACE(first_seen, '+00:00', '') AS TIMESTAMP) AS first_seen,
        payload
   FROM ichnos.landing.versions;
 
+DROP TABLE ichnos.landing.versions;
+
+CREATE TABLE ichnos.landing.versions AS SELECT * FROM ichnos.landing.versions_temp;
+
+DROP TABLE ichnos.landing.versions_temp;
+
+-- ---------------------------------------------------------------- http
 -- favicon_hash dropped: the plain zgrab2 http module never fetched /favicon.ico, so it
 -- was a hardcoded None on every row ever published.
-CREATE OR REPLACE TABLE ichnos.landing.http AS
-SELECT status_code,
-       headers,
-       server,
-       title,
-       redirect_location,
-       fingerprint_id,
+CREATE TABLE ichnos.landing.http_temp AS
+SELECT status_code, headers, server, title, redirect_location, fingerprint_id,
        CAST(REPLACE(first_seen, '+00:00', '') AS TIMESTAMP) AS first_seen
   FROM ichnos.landing.http;
 
+DROP TABLE ichnos.landing.http;
+
+CREATE TABLE ichnos.landing.http AS SELECT * FROM ichnos.landing.http_temp;
+
+DROP TABLE ichnos.landing.http_temp;
+
+-- ---------------------------------------------------------------- https
 -- jarm dropped: separate zgrab2 module, never wired into the scanner, same story.
-CREATE OR REPLACE TABLE ichnos.landing.https AS
-SELECT version,
-       cipher_suite,
-       certificate,
-       fingerprint_id,
+CREATE TABLE ichnos.landing.https_temp AS
+SELECT version, cipher_suite, certificate, fingerprint_id,
        CAST(REPLACE(first_seen, '+00:00', '') AS TIMESTAMP) AS first_seen
   FROM ichnos.landing.https;
 
-CREATE OR REPLACE TABLE ichnos.landing.ssh AS
-SELECT banner,
-       version,
-       software,
-       comment,
-       host_key_algorithm,
-       host_key_fingerprint_sha256,
-       fingerprint_id,
-       CAST(REPLACE(first_seen, '+00:00', '') AS TIMESTAMP) AS first_seen
-  FROM ichnos.landing.ssh;
+DROP TABLE ichnos.landing.https;
 
--- CREATE OR REPLACE replaces each dataset in place, reading from the same name it
--- writes - verified working, rows preserved, column type changed. That leaves the
--- names the worker already publishes to, so there is no rename and no config repoint.
--- The tradeoff is that the pre-migration table is gone once each statement commits:
--- check the SELECT half on its own first if you want a look before committing to it.
+CREATE TABLE ichnos.landing.https AS SELECT * FROM ichnos.landing.https_temp;
+
+DROP TABLE ichnos.landing.https_temp;
 
 -- Optional, for the three JSON-document columns: type them for readers via a view,
--- leaving the base tables VARCHAR so the hourly publish keeps working. Verified: the
--- view's payload column reads back as NVARCHAR while the base table stays appendable.
+-- leaving the base tables VARCHAR so the hourly publish keeps working. The view's
+-- payload column reads back as NVARCHAR while the base table stays appendable.
 --
 -- CREATE VIEW ichnos.landing.versions_typed AS
 -- SELECT fingerprint_id, protocol, first_seen, CAST(payload AS NVARCHAR) AS payload
