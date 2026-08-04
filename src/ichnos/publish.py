@@ -84,6 +84,13 @@ SCHEMAS: Dict[str, Dict[str, str]] = {
         "first_seen": "timestamp",
         "payload": "string",
     },
+    "exclusions": {
+        "ip_or_cidr": "string",
+        "source": "string",
+        "requested_at": "timestamp",
+        "reason": "string",
+        "requester_ip": "string",
+    },
     "http": {
         "status_code": "int64",
         "headers": "string",
@@ -111,6 +118,57 @@ SCHEMAS: Dict[str, Dict[str, str]] = {
         "first_seen": "timestamp",
     },
 }
+
+
+# Every other dataset is an append-only log of things that happened. `exclusions` is
+# the opposite: a snapshot of a mutable table, where the interesting event is often a
+# *removal* (an opt-out withdrawn, a bad entry deleted). Appending snapshots would make
+# the dataset a pile of overlapping generations with no way to tell which is current,
+# so this one is committed with OVERWRITE - the published copy is always exactly what
+# the Exclusions table holds right now.
+OVERWRITE_DATASETS = frozenset({"exclusions"})
+
+# OVERWRITE only takes effect when there is something to commit, and `datasets()` /
+# `read_pending_datasets()` both drop empty row lists - so an exclusions list that
+# emptied out would publish nothing at all and silently leave the previous generation
+# standing in Opteryx, which is the exact failure OVERWRITE exists to prevent. This
+# fixed row guarantees the snapshot is never empty, so "all exclusions removed" still
+# propagates as a real commit.
+#
+# 0.0.0.0 is the right choice for that because it changes nothing: 0.0.0.0/8 is already
+# in blocklist.DEFAULT_BOGONS ("this host on this network"), and build_blocklist's
+# collapse_addresses absorbs the /32 into that /8, so this row cannot alter the
+# blocklist by a single byte. A fixed timestamp, not utcnow(), so republishing an
+# unchanged table produces an identical snapshot rather than a spurious diff.
+SENTINEL_EXCLUSION = {
+    "ip_or_cidr": "0.0.0.0",
+    "source": "manual",
+    "requested_at": datetime(1970, 1, 1, tzinfo=timezone.utc).isoformat(),
+    "reason": "fixed sentinel - keeps the exclusions snapshot non-empty so OVERWRITE always commits",
+    "requester_ip": None,
+}
+
+
+def exclusion_rows(exclusions) -> List[Dict]:
+    """Build the `exclusions` dataset: the current table contents plus the sentinel.
+
+    Takes `Exclusion` records (models.Exclusion) rather than reading the store itself -
+    publish.py has no storage dependency and shouldn't grow one.
+    """
+    rows = [dict(SENTINEL_EXCLUSION)]
+    for exclusion in exclusions:
+        rows.append(
+            {
+                "ip_or_cidr": exclusion.ip_or_cidr,
+                # `source` is an ExclusionSource (a str Enum) - str() would render it
+                # as "ExclusionSource.SELF_SERVE", so take .value explicitly.
+                "source": exclusion.source.value,
+                "requested_at": exclusion.requested_at.isoformat(),
+                "reason": exclusion.reason,
+                "requester_ip": exclusion.requester_ip,
+            }
+        )
+    return rows
 
 
 class PublishError(Exception):
@@ -267,10 +325,15 @@ def publish_hour(
         if inspect_result is not None and inspect_result.has_issues:
             raise PublishError(dataset, inspect_result.issues)
 
+        resolution = (
+            ConflictResolution.OVERWRITE
+            if dataset in OVERWRITE_DATASETS
+            else ConflictResolution.APPEND
+        )
         commit = session.commit(
             Target(workspace, collection, dataset),
             snapshot_message=f"ichnos hourly batch {datetime.now(timezone.utc).isoformat()}",
-            conflict_resolution=ConflictResolution.APPEND,
+            conflict_resolution=resolution,
         )
         results[dataset] = commit
         if on_commit is not None:

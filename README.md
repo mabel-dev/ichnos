@@ -20,7 +20,7 @@ identity](#scanner-identity) below.
 
 - **Protocols**: HTTP, HTTPS, and SSH.
 - **Discovery vs refresh**: `scan` runs native ZMap discovery (rate-limited via ZMap's
-  own `--rate`, `ICHNOS_ZMAP_RATE_PPS` - 8 pps as of the latest adjustment, see
+  own `--rate`, `ICHNOS_ZMAP_RATE_PPS` - 16 pps as of the latest adjustment, see
   `config.py`'s `zmap_rate_pps`) over addresses that aren't already known-responsive,
   continuously. `refresh` re-tests every already-known-responsive host directly via
   ZGrab2 (no ZMap involved) to detect drift, on a more relaxed cadence. See `cli.py`'s
@@ -38,10 +38,11 @@ identity](#scanner-identity) below.
 
 This is a prototype scoped to prove the pipeline end-to-end, not to achieve broad
 Internet coverage. Rate and protocol count have both grown incrementally since MVP
-launch, mostly backed by observed production data (see git history on `config.py` and
-`normalize.py`) rather than upfront guessing - the exception is the current 8 pps step,
-which ran ahead of the observation window and is flagged as such in `config.py`'s
-`zmap_rate_pps`. Distributing across workers is still
+launch, each backed by observed production data (see git history on `config.py` and
+`normalize.py`) rather than upfront guessing - the current 8 pps step went out ahead of
+its observation window, which was then run immediately afterwards to confirm it (7h45m,
+93 runs, no skipped ticks; see `config.py`'s `zmap_rate_pps`). Distributing across
+workers is still
 explicitly deferred - see the design doc's scaling strategy.
 
 ## Layout

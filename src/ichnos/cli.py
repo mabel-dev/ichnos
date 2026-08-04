@@ -59,9 +59,14 @@ from .logging_setup import get_logger
 from .publish import PublishBatch
 from .publish import PublishError
 from .publish import append_ndjson
+from .odata import ODataError
+from .odata import fetch_access_token
 from .publish import clear_pending
+from .publish import exclusion_rows
 from .publish import publish_hour
 from .publish import read_pending_datasets
+from .responsive import read_responsive_file
+from .responsive import refresh_protocol
 from .ratelimit import TokenBucket
 from .s3sync import download_file as s3_download_file
 from .s3sync import upload_file as s3_upload_file
@@ -256,9 +261,6 @@ def cmd_refresh(args: argparse.Namespace) -> int:
 def cmd_publish(args: argparse.Namespace) -> int:
     settings = Settings.from_env()
     datasets = read_pending_datasets(settings.pending_dir)
-    if not datasets:
-        logger.info("nothing pending to publish")
-        return 0
 
     if not settings.opteryx_client_id or not settings.opteryx_client_secret:
         logger.error(
@@ -266,6 +268,15 @@ def cmd_publish(args: argparse.Namespace) -> int:
             "cannot authenticate to the Opteryx Upload Service"
         )
         return 1
+
+    # Published every cycle regardless of whether any scanning happened, and
+    # deliberately not gated on "is there anything pending" the way the scan-produced
+    # datasets are. It is committed with OVERWRITE (see publish.OVERWRITE_DATASETS), so
+    # skipping a cycle leaves a stale generation published; an opt-out withdrawn during
+    # an idle hour has to propagate just as promptly as one withdrawn during a busy one.
+    # exclusion_rows() always returns at least the sentinel, so this is never empty.
+    store = _build_store(args.store, settings)
+    datasets["exclusions"] = exclusion_rows(store.exclusions.list_all())
 
     from opteryx_upload import PATAuthenticator
     from opteryx_upload import UploadClient
@@ -336,6 +347,72 @@ def cmd_jurisdiction_refresh(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_responsive_refresh(args: argparse.Namespace) -> int:
+    """Rebuild the known-responsive host list from published Observations.
+
+    Nightly, ahead of `refresh`, so both that job's target list and discovery's
+    exclusion are current for the day. Nothing consumes the output yet - this runs
+    alongside CurrentState and logs how the two compare, which is the evidence that the
+    derived list is equivalent before anything is switched over to it (and before the
+    table is dropped). The comparison, and the store read backing it, come out with
+    CurrentState itself.
+    """
+    settings = Settings.from_env()
+    if not settings.opteryx_client_id or not settings.opteryx_client_secret:
+        logger.error(
+            "ICHNOS_OPTERYX_CLIENT_ID / ICHNOS_OPTERYX_CLIENT_SECRET not set - "
+            "cannot authenticate to the OData feed"
+        )
+        return 1
+
+    try:
+        token = fetch_access_token(
+            settings.opteryx_client_id,
+            settings.opteryx_client_secret,
+            token_url=settings.odata_token_url,
+        )
+    except ODataError as exc:
+        # Every protocol shares the token, so this is fatal for the whole run - but
+        # it leaves every existing list in place, which is the safe outcome.
+        logger.error("responsive-refresh: could not obtain an access token: %s", exc)
+        return 1
+
+    store = _build_store(args.store, settings)
+    protocols = [args.protocol] if args.protocol else [e.protocol for e in store.schedule.list_all()]
+
+    failures = 0
+    for protocol in protocols:
+        path = settings.known_responsive_path.format(protocol=protocol)
+        ok = refresh_protocol(
+            protocol,
+            path,
+            workspace=settings.opteryx_workspace,
+            collection=settings.opteryx_collection,
+            token=token,
+            window_days=settings.responsive_window_days,
+            base_url=settings.odata_base_url,
+        )
+        if not ok:
+            failures += 1
+            continue
+
+        # Parallel-run comparison, temporary. CurrentState is unbounded where the
+        # derived list is a rolling window, so "only in CurrentState" is expected to be
+        # non-zero and to grow - it is hosts that last answered before the window.
+        # "Only in derived" is the one that should stay near zero; anything else there
+        # means the derivation is finding hosts the table never recorded.
+        derived = set(read_responsive_file(path))
+        stored = {r.ip for r in store.current_state.list_all(protocol)}
+        logger.info(
+            "responsive-refresh %s: derived=%d currentstate=%d "
+            "only-in-derived=%d only-in-currentstate=%d",
+            protocol, len(derived), len(stored),
+            len(derived - stored), len(stored - derived),
+        )
+
+    return 1 if failures else 0
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
     import uvicorn
 
@@ -383,7 +460,18 @@ def build_parser() -> argparse.ArgumentParser:
     refresh.set_defaults(func=cmd_refresh)
 
     publish = subparsers.add_parser("publish", help="commit pending rows to Opteryx")
+    # Needed since the batch now includes an `exclusions` snapshot read from the store,
+    # not just the scan-produced rows accumulated in pending_dir.
+    publish.add_argument("--store", choices=["dynamodb", "memory"], default="dynamodb")
     publish.set_defaults(func=cmd_publish)
+
+    rrefresh = subparsers.add_parser(
+        "responsive-refresh",
+        help="rebuild the known-responsive host list from published Observations",
+    )
+    rrefresh.add_argument("--protocol", default=None, help="default: every scheduled protocol")
+    rrefresh.add_argument("--store", choices=["dynamodb", "memory"], default="dynamodb")
+    rrefresh.set_defaults(func=cmd_responsive_refresh)
 
     jrefresh = subparsers.add_parser(
         "jurisdiction-refresh", help="rebuild the jurisdiction pre-exclusion CIDR list"

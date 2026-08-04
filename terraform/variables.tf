@@ -54,13 +54,13 @@ variable "rate_interval_seconds" {
 variable "zmap_rate_pps" {
   description = "Native ZMap discovery rate in whole packets/second (`--rate` rejects fractional values). Mirrors config.py's `zmap_rate_pps` default, which documents how the current figure was arrived at and what to watch after changing it. Sized jointly with `scan_candidates_per_cron_tick` - a run takes roughly `candidates / rate_pps + cooldown_seconds`, so changing this alone changes how much of the 15-minute cron interval a run consumes."
   type        = number
-  default     = 8
+  default     = 16
 }
 
 variable "scan_candidates_per_cron_tick" {
-  description = "Candidates per `ichnos scan` invocation - sized so one run takes roughly as long as the cron interval between invocations (see cli.py's module docstring). Native ZMap discovery runs at config.py's zmap_rate_pps (8 pps as of the third increase - see its docstring, which explains why this one is a requested step rather than a measured one), so one run takes roughly `candidates / rate_pps + cooldown_seconds` - at the defaults, 6400 candidates takes ~803s (~13.4 min), the same real-but-thin buffer inside the 15-minute cron interval as the 3200-at-4pps, 1600-at-2pps and original 800-at-1pps sizings (doubling both candidates and rate leaves runtime unchanged - measured at 2pps, where every completed run came in at 804.2-804.3s against the predicted 803s). What that arithmetic does not cover is the serial ZGrab2 backlog, which grows with the candidate count rather than staying fixed - see config.py's zmap_rate_pps. The scan cron entries are flock-guarded (user_data.sh.tftpl) specifically so an occasional overrun past that buffer degrades to a skipped tick, never an overlapping concurrent run."
+  description = "Candidates per `ichnos scan` invocation - sized so one run takes roughly as long as the cron interval between invocations (see cli.py's module docstring). Native ZMap discovery runs at config.py's zmap_rate_pps (16 pps as of the fourth increase - see its docstring for the measurements), so one run takes roughly `candidates / rate_pps + cooldown_seconds` - at the defaults, 12800 candidates takes ~803s (~13.4 min), the same real-but-thin buffer inside the 15-minute cron interval as the 6400-at-8pps, 3200-at-4pps, 1600-at-2pps and original 800-at-1pps sizings (doubling both candidates and rate leaves runtime unchanged - measured at 8pps over 93 runs, median 803.3s against the predicted 803s, worst case 825.7s, no skipped ticks). The serial ZGrab2 backlog is the part that arithmetic does not cover: it was ~10% of the window at 6400 candidates and doubles with the candidate count while the window stays fixed, so it is ~20% at 12800 and binds within a few more doublings - see config.py's zmap_rate_pps. The scan cron entries are flock-guarded (user_data.sh.tftpl) specifically so an occasional overrun past that buffer degrades to a skipped tick, never an overlapping concurrent run."
   type        = number
-  default     = 6400
+  default     = 12800
 }
 
 variable "ichnos_git_url" {
