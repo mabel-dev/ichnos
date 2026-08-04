@@ -111,10 +111,13 @@ resource "aws_autoscaling_group" "scanner" {
   # min_healthy_percentage = 0 because the group is a single instance: any higher and
   # the refresh cannot start, since taking the one instance out of service necessarily
   # drops health to 0%. That means a real gap in scanning while the replacement runs
-  # user_data - a few missed 15-minute ticks, which is the accepted trade for this
-  # deployment (design doc §12 puts multi-instance availability out of MVP scope).
-  # Publish runs hourly, so pending NDJSON on the old root volume is lost on refresh;
-  # run `ichnos publish` first when a tick's results matter.
+  # user_data - now up to a full hourly tick rather than a few 15-minute ones, which
+  # is the accepted trade for this deployment (design doc §12 puts multi-instance
+  # availability out of MVP scope). Publish runs hourly, and cmd_scan writes nothing to
+  # pending_dir until a run completes, so a refresh during a run discards that run's
+  # results entirely along with anything else pending on the old root volume; run
+  # `ichnos publish` first, and prefer refreshing shortly after :05 when a run has just
+  # published rather than mid-run.
   instance_refresh {
     strategy = "Rolling"
     preferences {

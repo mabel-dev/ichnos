@@ -345,7 +345,7 @@ sent.</p>
 
 <h2>How often</h2>
 <p>Discovery of new hosts runs continuously at a small number of requests per second
-(ZMap's own native rate limit), in short windows every 15 minutes - not a sustained
+(ZMap's own native rate limit), in one window per hour - not a sustained
 flood, and a given address is essentially never sampled twice by discovery in any
 practical timeframe. Hosts already known to respond get a separate, single re-check
 once a day (a "refresh" pass) to detect changes, not repeated probing. Rates are set so

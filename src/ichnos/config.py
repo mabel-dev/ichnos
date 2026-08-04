@@ -119,7 +119,12 @@ class Settings:
     #
     # Skipped ticks remain the signal that a rate is too fast - the flock guard
     # (user_data.sh.tftpl) turns an overrun into a dropped tick rather than overlapping
-    # runs, so overruns are silent unless counted.
+    # runs, so overruns are silent unless counted. A skip costs more than it used to:
+    # the cron interval is now hourly rather than the 900s the measurements above were
+    # taken against (see variables.tf's scan_candidates_per_cron_tick), so a dropped
+    # tick loses an hour of scanning rather than a quarter of one. The rate itself is
+    # unchanged by that - only the slice size - so the per-run arithmetic and the
+    # measured hit rates below carry over untouched.
     #
     # Now 16pps, with candidates doubled to 12800 alongside it. Deliberately a smaller
     # claim than the steps above: the 8pps window measured grab work at ~10% of the
