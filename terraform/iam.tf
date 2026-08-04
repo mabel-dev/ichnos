@@ -49,9 +49,17 @@ data "aws_iam_policy_document" "scanner" {
   }
 
   statement {
-    sid       = "JurisdictionBlocklistS3"
-    actions   = ["s3:GetObject", "s3:PutObject"]
-    resources = ["${aws_s3_bucket.data.arn}/jurisdiction/*"]
+    sid     = "InstanceSurvivingStateS3"
+    actions = ["s3:GetObject", "s3:PutObject"]
+    resources = [
+      "${aws_s3_bucket.data.arn}/jurisdiction/*",
+      # The TLS certificate backup (user_data.sh.tftpl). Same read-and-write shape as
+      # the jurisdiction list and for the same reason: both are state that must outlive
+      # the instance holding them. No lifecycle rule touches this prefix - the two in
+      # s3.tf are scoped to raw-logs/ and jurisdiction/ - so a backup does not expire
+      # out from under a rebuild.
+      "${aws_s3_bucket.data.arn}/certs/*",
+    ]
     # NOTE: raw-logs/* isn't granted here because nothing in the app uploads there
     # yet (design doc §12's raw discovery-log audit trail isn't implemented in code -
     # see ichnos README's "Not yet in this repo"). Add that statement when it is,

@@ -34,6 +34,8 @@ locals {
     jurisdiction_countries        = join(",", var.jurisdiction_countries)
     jurisdiction_s3_bucket        = aws_s3_bucket.data.bucket
     jurisdiction_s3_key           = "jurisdiction/jurisdiction-blocklist.conf"
+    cert_s3_bucket                = aws_s3_bucket.data.bucket
+    cert_s3_key                   = "certs/letsencrypt.tar.gz"
     ichnos_git_url                = var.ichnos_git_url
     ichnos_git_ref                = var.ichnos_git_ref
     log_group_name                = aws_cloudwatch_log_group.scanner.name

@@ -233,8 +233,37 @@ server {
 }
 NGINXEOF
 nginx -t && systemctl reload nginx
+# Back the certificate up the moment it is issued or renewed. Let's Encrypt allows 5
+# certificates per registered domain per 168h, and every instance replacement used to
+# burn one because /etc/letsencrypt lives on the ephemeral root volume - five rebuilds
+# in three days exhausted the allowance and left the site without TLS for 16 hours,
+# with no way to reissue. With this, a rebuild restores rather than reissues and the
+# allowance stops being a constraint on how often we can deploy.
+#
+# tar, not `aws s3 cp --recursive`: live/ is a directory of symlinks into archive/, and
+# a recursive copy dereferences them, producing a tree certbot no longer recognises as
+# its own. -p keeps the 0600 private keys 0600.
+tar -czpf /tmp/letsencrypt.tar.gz -C / etc/letsencrypt \
+  && aws s3 cp /tmp/letsencrypt.tar.gz "s3://${cert_s3_bucket}/${cert_s3_key}" \
+  && rm -f /tmp/letsencrypt.tar.gz \
+  && echo "certificate backed up to s3://${cert_s3_bucket}/${cert_s3_key}"
 HOOKEOF
 chmod +x /etc/ichnos/certbot-deploy-hook.sh
+
+# --- Restore a previously-issued certificate before certbot is ever invoked ---
+# This is what makes a rebuild free. certbot's --keep-until-expiring treats a valid
+# restored certificate as nothing to do, so no request reaches Let's Encrypt at all and
+# the 5-per-168h allowance is untouched. Only ever pulled when there is no local copy,
+# so a live instance's own certificate is never overwritten by an older snapshot.
+if [ ! -d /etc/letsencrypt/live/${domain_name} ]; then
+  if aws s3 cp "s3://${cert_s3_bucket}/${cert_s3_key}" /tmp/letsencrypt.tar.gz; then
+    tar -xzpf /tmp/letsencrypt.tar.gz -C /
+    rm -f /tmp/letsencrypt.tar.gz
+    echo "restored certificate from s3://${cert_s3_bucket}/${cert_s3_key}"
+  else
+    echo "no certificate backup at s3://${cert_s3_bucket}/${cert_s3_key} - certbot will issue a new one"
+  fi
+fi
 
 # --- Cert issuance via DNS-01 (route53 plugin) - deliberately NOT the nginx/HTTP-01
 # plugin, so issuance never depends on this instance's nginx state. --keep-until-
