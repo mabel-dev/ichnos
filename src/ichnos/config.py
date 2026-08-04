@@ -39,6 +39,19 @@ class Settings:
     pending_dir: str = "/var/lib/ichnos/pending"
     publish_tmp_dir: str = "/var/lib/ichnos/publish-tmp"
 
+    # The known-responsive host list, derived nightly from published Observations (see
+    # responsive.py). `{protocol}` is substituted per list - http/https/ssh each get
+    # their own, since discovery excludes and refresh targets them independently.
+    known_responsive_path: str = "/var/lib/ichnos/known-responsive-{protocol}.conf"
+    # How far back an observation still counts as responsive. Also, with a nightly
+    # refresh, how many consecutive non-responses before a host is given up on.
+    responsive_window_days: int = 15
+    # Read path to Opteryx (odata.py). Separate host from the Upload Service's, and a
+    # separate auth step - the PAT below is not a bearer token and has to be exchanged
+    # for a JWT first.
+    odata_base_url: str = "https://odata.opteryx.app"
+    odata_token_url: str = "https://authenticate.opteryx.app/token"
+
     # S3 persistence for the jurisdiction blocklist (empty = local-only, e.g. dev/test).
     # Without this, a freshly-replaced instance starts with an EMPTY jurisdiction
     # exclusion list until the next weekly refresh - up to a week of scanning without
@@ -182,6 +195,12 @@ class Settings:
             ),
             pending_dir=_env("PENDING_DIR", cls.pending_dir),
             publish_tmp_dir=_env("PUBLISH_TMP_DIR", cls.publish_tmp_dir),
+            known_responsive_path=_env("KNOWN_RESPONSIVE_PATH", cls.known_responsive_path),
+            responsive_window_days=_env_int(
+                "RESPONSIVE_WINDOW_DAYS", cls.responsive_window_days
+            ),
+            odata_base_url=_env("ODATA_BASE_URL", cls.odata_base_url),
+            odata_token_url=_env("ODATA_TOKEN_URL", cls.odata_token_url),
             jurisdiction_s3_bucket=_env("JURISDICTION_S3_BUCKET", cls.jurisdiction_s3_bucket),
             jurisdiction_s3_key=_env("JURISDICTION_S3_KEY", cls.jurisdiction_s3_key),
             rate_interval_seconds=_env_float("RATE_INTERVAL_SECONDS", cls.rate_interval_seconds),

@@ -270,7 +270,9 @@ systemctl daemon-reload
 systemctl enable --now ichnos-web
 
 # --- cron: scan (discovery, poll every 15 min, one process per protocol), refresh
-# (re-check known-responsive hosts, daily), publish hourly, jurisdiction-refresh
+# (re-check known-responsive hosts, daily), responsive-refresh (rebuild that
+# known-responsive list from published Observations, daily at 03:30 - deliberately
+# ahead of the 04:00 refresh that consumes it), publish hourly, jurisdiction-refresh
 # weekly, certbot retry/renewal every 30 min (see note above).
 #
 # Native discovery is sized (scan_candidates_per_cron_tick, see variables.tf) to use
@@ -288,6 +290,7 @@ cat > /etc/cron.d/ichnos <<CRONEOF
 0 4 * * * root flock -n /var/lock/ichnos-refresh-http.lock bash -c 'set -a; . /etc/ichnos/env; set +a; /opt/ichnos-venv/bin/ichnos refresh --protocol http --store dynamodb >> /var/log/ichnos/refresh-http.log 2>&1'
 0 4 * * * root flock -n /var/lock/ichnos-refresh-https.lock bash -c 'set -a; . /etc/ichnos/env; set +a; /opt/ichnos-venv/bin/ichnos refresh --protocol https --store dynamodb >> /var/log/ichnos/refresh-https.log 2>&1'
 0 4 * * * root flock -n /var/lock/ichnos-refresh-ssh.lock bash -c 'set -a; . /etc/ichnos/env; set +a; /opt/ichnos-venv/bin/ichnos refresh --protocol ssh --store dynamodb >> /var/log/ichnos/refresh-ssh.log 2>&1'
+30 3 * * * root flock -n /var/lock/ichnos-responsive.lock bash -c 'set -a; . /etc/ichnos/env; set +a; /opt/ichnos-venv/bin/ichnos responsive-refresh --store dynamodb >> /var/log/ichnos/responsive.log 2>&1'
 5 * * * * root set -a; . /etc/ichnos/env; set +a; /opt/ichnos-venv/bin/ichnos publish >> /var/log/ichnos/publish.log 2>&1
 0 3 * * 0 root set -a; . /etc/ichnos/env; set +a; /opt/ichnos-venv/bin/ichnos jurisdiction-refresh --source rir --countries "${jurisdiction_countries}" >> /var/log/ichnos/jurisdiction.log 2>&1
 */30 * * * * root certbot certonly --dns-route53 --dns-route53-propagation-seconds 30 -d "${domain_name}" -m "${abuse_email}" --agree-tos --non-interactive --keep-until-expiring --deploy-hook /etc/ichnos/certbot-deploy-hook.sh >> /var/log/ichnos/certbot.log 2>&1
