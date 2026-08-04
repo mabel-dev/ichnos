@@ -77,20 +77,52 @@ class Settings:
     # time is absorbed inside the paced discovery loop rather than added to it, and
     # doubling the hit count does not spend the cron-interval buffer.
     #
-    # 8pps is a requested throughput increase rather than a further data-driven one -
-    # the measurements above were taken at 2pps and validated the 4pps step, and no
-    # equivalent observation window has been run at 4pps yet. The arithmetic it rests on
-    # is unchanged (candidates double alongside the rate, so a run is still ~803s), but
-    # the thing to actually watch is the grab backlog, not the discovery pace: ZMap
-    # itself still finishes on schedule regardless of what we're doing, while grabs are
-    # serial in the reader loop at up to 30s each on timeout. At 6400 candidates and the
-    # observed ~0.3-0.6% hit rate that's ~19-38 grabs per run, so a run where an unusual
-    # share of them time out can now, arithmetically, outlast the ~800s discovery window
-    # in a way it couldn't at 3200 candidates. That degrades to a skipped tick via the
-    # flock guard (user_data.sh.tftpl), not to overlapping runs - but a rising count of
-    # skipped ticks is the signal that this rate is too fast, and it's worth checking
-    # before assuming this step landed as cleanly as the last two.
-    zmap_rate_pps: int = 8
+    # Raised again to 8pps. This one went out ahead of its observation window rather
+    # than after it, so the window was run immediately afterwards: 7h45m, 93 completed
+    # runs (31 per protocol, 2026-08-03 22:45Z to 2026-08-04 06:30Z). Median run 803.3s
+    # against the 803s the model predicts, worst case 825.7s - still 74s inside the
+    # 900s cron interval - with zero flock skips and zero ZMap failures.
+    #
+    # That window also settled the thing worth worrying about at higher rates, which is
+    # the grab backlog rather than the discovery pace. ZMap finishes on schedule no
+    # matter what we do; ZGrab2 grabs are serial in the reader loop at up to 30s each on
+    # timeout, and they scale with candidates rather than staying fixed. 199 grab
+    # timeouts across those runs (~2 per run, ~60s of blocking) did not extend a single
+    # run measurably - the grabs overlap ZMap's paced sending through the stdout pipe
+    # buffer instead of adding to it. So the arithmetic (`candidates / rate_pps +
+    # cooldown`) holds with grab load included, at this volume. It will stop holding
+    # eventually: grab work was ~10% of the window here, and it doubles with every
+    # candidate doubling while the window stays fixed at ~803s.
+    #
+    # Measured hit rates from the same window, which correct the ~0.3-0.6% figure above
+    # (that was an early cross-protocol estimate, and it holds only for ssh now):
+    #
+    #     http    1.52% responsive, 0.94% new fingerprints per candidate
+    #     https   1.71% responsive, 1.19% new
+    #     ssh     0.77% responsive, 0.64% new
+    #
+    # These matter beyond bookkeeping: grab count is hit rate x candidates, so an
+    # understated hit rate understates exactly the load that eventually binds.
+    #
+    # Skipped ticks remain the signal that a rate is too fast - the flock guard
+    # (user_data.sh.tftpl) turns an overrun into a dropped tick rather than overlapping
+    # runs, so overruns are silent unless counted.
+    #
+    # Now 16pps, with candidates doubled to 12800 alongside it. Deliberately a smaller
+    # claim than the steps above: the 8pps window measured grab work at ~10% of the
+    # run, so 16pps puts it at ~20%, still well inside the buffer. Nothing was measured
+    # at 16pps before this went out.
+    #
+    # Worth being honest about what this series of doublings can and cannot tell us.
+    # Doubling candidates and rate together is runtime-neutral by construction, so run
+    # duration reads ~803s at every step and will keep reading ~803s until grab work
+    # fills the window - four or five doublings out, by which point the outbound rate is
+    # in the hundreds of pps. Local timing is therefore a late signal, not an early one,
+    # and the backpressure that actually matters for a scanner (abuse reports, upstream
+    # intervention, being firewalled) arrives out-of-band days later and never appears
+    # in these logs at all. "No skipped ticks" means the box is coping. It does not mean
+    # the rate is acceptable to anyone else.
+    zmap_rate_pps: int = 16
 
     # User-Agent sent by ZGrab2's http module. AWS's network-scanning guidelines
     # (repost.aws, "AWS Guidelines for network scanning") ask under their "identifiable"

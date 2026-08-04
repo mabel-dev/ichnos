@@ -16,11 +16,14 @@ confirmed against the real binary, not assumed) - 1 pps is the practical floor. 
 at 1pps first, deliberately, to observe real production behaviour before going any
 faster; raised to 2pps (see config.py's zmap_rate_pps) once that observation period
 showed a low, stable hit rate and no operational issues, then to 4pps after two clean
-hours of measured runs at 2pps - data-driven increases, not re-guesses - and now to
-8pps, which is a requested throughput step rather than one the observations reach (see
-config.py for what to watch). All of them are far looser than this project's original
-"one request per 5 seconds" MVP figure, which was our own conservatism, not a hard
-requirement.
+hours of measured runs at 2pps, and now to 8pps - that last one deployed ahead of its
+observation window rather than after it, with the window (7h45m, 93 runs, median 803.3s
+against a predicted 803s, no skipped ticks) run immediately afterwards to confirm it,
+and now 16pps. See config.py's zmap_rate_pps for the measurements, for the grab backlog
+that actually binds as candidates grow, and for why run duration is a late signal rather
+than an early one in this series. All of these rates are far looser than this
+project's original "one request per 5 seconds" MVP figure, which was our own
+conservatism, not a hard requirement.
 
 Running this for real requires the `zmap` and `zgrab2` binaries installed and zmap
 running with raw-socket privileges (root, or `cap_net_raw+eip` on the binary) - not
