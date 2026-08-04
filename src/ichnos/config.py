@@ -70,6 +70,14 @@ class Settings:
     # ZMap resolve it itself".
     zmap_gateway_mac: str = ""
 
+    # How many ZGrab2 grabs discovery may have in flight at once. See scanner.py's
+    # DEFAULT_GRAB_CONCURRENCY for the sizing; the short version is that grabs were
+    # serial in the reader loop, their share of a run's window is proportional to
+    # zmap_rate_pps rather than to the slice size, and that capped the design near
+    # 50pps regardless of how the window was sized. Concurrency is the only lever that
+    # moves that ceiling - buffer, cadence and candidate count do not.
+    grab_concurrency: int = 8
+
     # ZMap's own default (8s) is sized for one large campaign - now a single tail wait
     # at the end of each scan window rather than per-target, so a smaller value is
     # appropriate - see scanner.py's DEFAULT_ZMAP_COOLDOWN_SECONDS for the measurements
@@ -243,6 +251,7 @@ class Settings:
             zmap_gateway_mac=_env("ZMAP_GATEWAY_MAC", cls.zmap_gateway_mac),
             zmap_cooldown_seconds=_env_int("ZMAP_COOLDOWN_SECONDS", cls.zmap_cooldown_seconds),
             zmap_rate_pps=_env_int("ZMAP_RATE_PPS", cls.zmap_rate_pps),
+            grab_concurrency=_env_int("GRAB_CONCURRENCY", cls.grab_concurrency),
             scan_user_agent=_env("SCAN_USER_AGENT", cls.scan_user_agent),
             opteryx_workspace=_env("OPTERYX_WORKSPACE", cls.opteryx_workspace),
             opteryx_collection=_env("OPTERYX_COLLECTION", cls.opteryx_collection),

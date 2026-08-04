@@ -38,6 +38,7 @@ import json
 import subprocess
 import tempfile
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from dataclasses import field
 from datetime import datetime
@@ -105,6 +106,21 @@ rejected outright as an invalid numeric value, not silently rounded) - 1 pps is 
 practical floor. Looser than this project's original 5-second-interval MVP figure, but
 that was our own conservatism to relax, not a technical or compliance requirement;
 1 pps is ZMap's real native minimum, not an approximation."""
+
+DEFAULT_GRAB_CONCURRENCY = 8
+"""How many ZGrab2 grabs may be in flight at once during discovery.
+
+Sized against measured load rather than guessed: a grab takes 585ms at the median and
+966ms on average (301 hosts, production), and discovery produces well under one hit per
+second even at 32pps, so mean demand is around one worker. The headroom is for
+timeouts - a 30s grab holds a worker for 30s, and they arrive in clusters - which is
+exactly the case that used to stall the reader entirely.
+
+Deliberately a small number. This bounds simultaneous outbound handshakes, and every
+one is to a different host, so it does not make the scan heavier for anyone being
+scanned - but it is still the knob that decides how much of this machine's network and
+file-descriptor budget a run can hold at once, and it should be raised on evidence
+rather than in anticipation."""
 
 DEFAULT_ZMAP_COOLDOWN_SECONDS = 3
 """ZMap's own default (8s) is sized for a full campaign - a fixed, one-time tail wait
@@ -186,14 +202,75 @@ def _grab_and_record(
     outcome: ScanRunOutcome,
     metadata: ScanMetadataRecord,
     user_agent: Optional[str] = None,
+    record_lock: Optional["threading.Lock"] = None,
 ) -> None:
     """Do one ZGrab2 grab against an already-known-responsive `ip` and record the
     result - either a successful fingerprint, or (if ZGrab2 couldn't complete its own
-    handshake) a `response_status="grab-failed"` row with no fingerprint."""
+    handshake) a `response_status="grab-failed"` row with no fingerprint.
+
+    `record_lock` serializes everything *after* the grab when this runs on the worker
+    pool (_stream_discover_and_grab). The split is deliberate and is where the whole
+    benefit comes from: `grab_one` is a subprocess round trip - 585ms at the median,
+    966ms mean, up to 30s on timeout, measured over 301 hosts in production - and
+    touches no shared state, so it parallelises. Everything after it mutates
+    `outcome`/`metadata` and calls the DynamoDB stores, and measures ~12ms in total
+    (three round trips at ~3.4ms each), so serializing it costs essentially nothing:
+    a single lock passes ~80 hosts/second where the scan produces well under one.
+
+    Serializing also settles the store question rather than betting on it. boto3
+    clients are documented thread-safe but resources are not, and both stores are
+    resource-backed (storage/dynamodb.py builds Table objects) - holding the lock
+    across those calls means the concurrency added here cannot depend on that
+    distinction being right.
+
+    None means "no concurrency" - the refresh path and the single-target path call
+    this directly, one host at a time, and need no lock.
+    """
+    lock = record_lock or _NULL_LOCK
     module_result = grab_one(
         ip, port, zgrab2_module, blocklist_path,
         run_command=run_command, user_agent=user_agent,
     )
+    with lock:
+        _record_grab_result(
+            module_result=module_result, scan_id=scan_id, protocol=protocol, ip=ip,
+            port=port, zgrab2_module=zgrab2_module, current_state=current_state,
+            version_index=version_index, today=today, clock=clock, outcome=outcome,
+            metadata=metadata,
+        )
+
+
+class _NullLock:
+    """Stand-in for callers that are already single-threaded, so `_grab_and_record`
+    has one code path rather than a conditional `with` around the recording block."""
+
+    def __enter__(self) -> None:
+        return None
+
+    def __exit__(self, *exc) -> bool:
+        return False
+
+
+_NULL_LOCK = _NullLock()
+
+
+def _record_grab_result(
+    *,
+    module_result: Optional[dict],
+    scan_id: str,
+    protocol: str,
+    ip: str,
+    port: int,
+    zgrab2_module: str,
+    current_state: CurrentStateStore,
+    version_index: VersionIndexStore,
+    today: str,
+    clock: Callable[[], datetime],
+    outcome: ScanRunOutcome,
+    metadata: ScanMetadataRecord,
+) -> None:
+    """The bookkeeping half of a grab. Split out so the caller can hold a lock across
+    exactly this part and not across the subprocess call - see `_grab_and_record`."""
     if module_result is None:
         logger.info("scan %s: %s responded to discovery but zgrab2 produced no result", scan_id, ip)
         outcome.observations.append(
@@ -303,6 +380,7 @@ def _stream_discover_and_grab(
     grab_run_command: CommandRunner,
     popen: PopenFactory,
     user_agent: Optional[str] = None,
+    grab_concurrency: int = DEFAULT_GRAB_CONCURRENCY,
 ) -> None:
     """One ZMap process, run for the whole scan window, streaming classified results as
     they arrive rather than hundreds of separate single-target invocations.
@@ -359,40 +437,74 @@ def _stream_discover_and_grab(
     proc = popen(cmd, stdout=subprocess.PIPE, stderr=stderr_file, text=True)
     watchdog = threading.Timer(watchdog_seconds, proc.kill)
     watchdog.start()
-    try:
-        for line in proc.stdout:
-            line = line.strip()
-            if not line or "," not in line:
-                continue
-            ip, classification = line.split(",", 1)
-            ip, classification = ip.strip(), classification.strip()
+    record_lock = threading.Lock()
 
-            if classification == "rst":
-                logger.info("scan %s: %s closed (RST)", scan_id, ip)
-                outcome.observations.append(
-                    Observation(
-                        scan_id=scan_id,
-                        observed_at=clock(),
-                        ip=ip,
-                        port=port,
-                        protocol=protocol,
-                        response_status="closed",
-                        fingerprint_id=None,
-                    )
-                )
-                continue
-
-            if classification != "synack":
-                continue  # unrecognized classification - ignore rather than guess
-
-            logger.info("scan %s: %s responded (synack), grabbing", scan_id, ip)
+    def _grab_worker(target_ip: str) -> None:
+        # Exceptions inside a pool worker land in a Future nobody reads, so an
+        # unexpected failure here would silently drop a host and look exactly like a
+        # host that never answered. Log it instead - the same reason ZMap's stderr is
+        # captured rather than sent to DEVNULL (see this function's docstring).
+        try:
             _grab_and_record(
-                scan_id=scan_id, protocol=protocol, ip=ip, port=port,
+                scan_id=scan_id, protocol=protocol, ip=target_ip, port=port,
                 zgrab2_module=zgrab2_module, blocklist_path=blocklist_path,
                 run_command=grab_run_command, current_state=current_state,
                 version_index=version_index, today=today,
                 clock=clock, outcome=outcome, metadata=metadata, user_agent=user_agent,
+                record_lock=record_lock,
             )
+        except Exception:
+            logger.exception("scan %s: grab worker failed for %s", scan_id, target_ip)
+
+    try:
+        # Grabs run on a bounded pool rather than inline. ZMap finishes on schedule
+        # regardless of what this loop does - it is a separate process, and the stdout
+        # pipe buffers - so a serial reader only shows up as the run overrunning once
+        # the backlog exceeds the whole window. That bound is set by the rate, not the
+        # slice size: grab work scales with candidates while the window is
+        # candidates/rate, so the share of a run spent grabbing is proportional to pps
+        # (~11% measured at 8pps, ~30% at 16pps). Serial grabbing therefore caps this
+        # design near 50pps no matter how the window is sized, which is what this pool
+        # exists to lift.
+        #
+        # It adds no load to any individual target: every concurrent grab is against a
+        # different host, and the discovery rate ZMap sends at is untouched. What it
+        # changes is how many of *our* outbound handshakes are in flight at once.
+        with ThreadPoolExecutor(
+            max_workers=grab_concurrency, thread_name_prefix="ichnos-grab"
+        ) as pool:
+            for line in proc.stdout:
+                line = line.strip()
+                if not line or "," not in line:
+                    continue
+                ip, classification = line.split(",", 1)
+                ip, classification = ip.strip(), classification.strip()
+
+                if classification == "rst":
+                    logger.info("scan %s: %s closed (RST)", scan_id, ip)
+                    with record_lock:
+                        outcome.observations.append(
+                            Observation(
+                                scan_id=scan_id,
+                                observed_at=clock(),
+                                ip=ip,
+                                port=port,
+                                protocol=protocol,
+                                response_status="closed",
+                                fingerprint_id=None,
+                            )
+                        )
+                    continue
+
+                if classification != "synack":
+                    continue  # unrecognized classification - ignore rather than guess
+
+                logger.info("scan %s: %s responded (synack), grabbing", scan_id, ip)
+                pool.submit(_grab_worker, ip)
+        # Leaving the `with` waits for every submitted grab, so the run does not report
+        # a result until the last one has been recorded. A run whose backlog outlasts
+        # ZMap still finishes late rather than losing hosts - the flock guard turns
+        # that into a skipped tick, which is the signal to look at, not silent loss.
     finally:
         watchdog.cancel()
         # ZMap closes stdout (ending the loop above via EOF) slightly before it has
@@ -443,6 +555,7 @@ def run_scan(
     gateway_mac: Optional[str] = None,
     cooldown_seconds: int = DEFAULT_ZMAP_COOLDOWN_SECONDS,
     rate_pps: int = DEFAULT_ZMAP_RATE_PPS,
+    grab_concurrency: int = DEFAULT_GRAB_CONCURRENCY,
     popen: PopenFactory = subprocess.Popen,
     user_agent: Optional[str] = None,
 ) -> ScanRunOutcome:
@@ -494,7 +607,8 @@ def run_scan(
         current_state=current_state, version_index=version_index,
         today=today, clock=clock, outcome=outcome,
         metadata=metadata, gateway_mac=gateway_mac, cooldown_seconds=cooldown_seconds,
-        rate_pps=rate_pps, grab_run_command=run_command, popen=popen,
+        rate_pps=rate_pps, grab_concurrency=grab_concurrency,
+        grab_run_command=run_command, popen=popen,
         user_agent=user_agent,
     )
 

@@ -855,3 +855,137 @@ def test_run_refresh_scan_no_known_hosts():
     assert outcome.metadata.targets_attempted == 0
     assert outcome.observations == []
     assert outcome.metadata.status == "completed"
+
+
+def _grab_stdout(server="nginx"):
+    return json.dumps({"data": {"http": {"result": {"response": {
+        "status_code": 200, "headers": {"server": [server]}, "body": "<title>x</title>",
+    }}}}})
+
+
+def test_grabs_run_concurrently_rather_than_one_at_a_time():
+    """The whole point of the pool. Grabs were serial in the reader loop, and their
+    share of a run's window is proportional to the discovery rate, which capped the
+    design near 50pps regardless of slice size. This asserts overlap actually happens -
+    a serial implementation passes every other test in this file unchanged."""
+    import threading as _t
+
+    in_flight, peak, lock = 0, [0], _t.Lock()
+    release = _t.Event()
+
+    def run_command(cmd, input=None):
+        nonlocal in_flight
+        with lock:
+            in_flight += 1
+            peak[0] = max(peak[0], in_flight)
+        # Hold every grab open until the test lets them go, so overlap is observable
+        # without depending on timing.
+        release.wait(timeout=5)
+        with lock:
+            in_flight -= 1
+        return _grab_stdout()
+
+    hosts = [f"203.0.113.{i},synack" for i in range(1, 5)]
+    store = InMemoryStore()
+
+    def unblock_once_saturated():
+        for _ in range(500):
+            with lock:
+                if peak[0] >= 4:
+                    break
+            _t.Event().wait(0.01)
+        release.set()
+
+    watcher = _t.Thread(target=unblock_once_saturated)
+    watcher.start()
+    outcome = run_scan(
+        scan_id="http-conc", protocol="http", port=80, zgrab2_module="http", seed=1,
+        candidate_count=4, blocklist_path="/tmp/x",
+        rate_limiter=TokenBucket(0.001, burst=1),
+        current_state=store.current_state, version_index=store.version_index,
+        run_command=run_command, clock=_fixed_clock(),
+        popen=_fake_popen(hosts, []), grab_concurrency=4,
+    )
+    watcher.join()
+
+    assert peak[0] > 1, f"grabs never overlapped (peak in-flight {peak[0]}) - still serial"
+    assert len(outcome.observations) == 4  # and nothing was dropped
+
+
+def test_every_grab_is_recorded_and_counted_under_concurrency():
+    """Concurrency must not lose or double-count anything. hosts_responsive is a plain
+    += on a shared record, and the outcome lists are appended to from every worker, so
+    this is the assertion that the record_lock is actually doing its job."""
+    hosts = [f"203.0.113.{i},synack" for i in range(1, 26)]
+    store = InMemoryStore()
+
+    def run_command(cmd, input=None):
+        ip = input.strip()
+        return _grab_stdout(server=f"srv-{ip.split('.')[-1]}")
+
+    outcome = run_scan(
+        scan_id="http-many", protocol="http", port=80, zgrab2_module="http", seed=1,
+        candidate_count=25, blocklist_path="/tmp/x",
+        rate_limiter=TokenBucket(0.001, burst=1),
+        current_state=store.current_state, version_index=store.version_index,
+        run_command=run_command, clock=_fixed_clock(),
+        popen=_fake_popen(hosts, []), grab_concurrency=8,
+    )
+
+    assert outcome.metadata.hosts_responsive == 25
+    assert len(outcome.observations) == 25
+    assert {o.ip for o in outcome.observations} == {f"203.0.113.{i}" for i in range(1, 26)}
+    # 25 distinct payloads -> 25 distinct fingerprints, each claimed exactly once.
+    assert len(outcome.new_versions) == 25
+    assert len({v.fingerprint_id for _, v in outcome.new_versions}) == 25
+
+
+def test_run_does_not_return_until_outstanding_grabs_have_finished():
+    """ZMap's stdout EOFs well before a slow grab completes. If the run returned then,
+    cmd_scan would write pending rows that omit hosts still being grabbed - silent loss
+    that looks exactly like a host that never answered."""
+    import threading as _t
+
+    started = _t.Event()
+
+    def run_command(cmd, input=None):
+        started.set()
+        _t.Event().wait(0.3)  # outlives the stdout iterator by a wide margin
+        return _grab_stdout()
+
+    store = InMemoryStore()
+    outcome = run_scan(
+        scan_id="http-drain", protocol="http", port=80, zgrab2_module="http", seed=1,
+        candidate_count=1, blocklist_path="/tmp/x",
+        rate_limiter=TokenBucket(0.001, burst=1),
+        current_state=store.current_state, version_index=store.version_index,
+        run_command=run_command, clock=_fixed_clock(),
+        popen=_fake_popen(["203.0.113.7,synack"], []), grab_concurrency=4,
+    )
+
+    assert started.is_set()
+    assert len(outcome.observations) == 1  # recorded before run_scan returned
+    assert outcome.observations[0].response_status == "success"
+
+
+def test_a_failing_grab_worker_is_logged_not_silently_dropped(caplog):
+    """An exception inside a pool worker lands in a Future nobody reads. Without the
+    try/except in _grab_worker it would vanish, and the host would be indistinguishable
+    from one that never answered - the same class of silent failure that made ZMap's
+    stderr worth capturing."""
+    def run_command(cmd, input=None):
+        raise RuntimeError("zgrab2 exploded")
+
+    store = InMemoryStore()
+    with caplog.at_level("ERROR"):
+        outcome = run_scan(
+            scan_id="http-boom", protocol="http", port=80, zgrab2_module="http", seed=1,
+            candidate_count=1, blocklist_path="/tmp/x",
+            rate_limiter=TokenBucket(0.001, burst=1),
+            current_state=store.current_state, version_index=store.version_index,
+            run_command=run_command, clock=_fixed_clock(),
+            popen=_fake_popen(["203.0.113.8,synack"], []), grab_concurrency=2,
+        )
+
+    assert outcome.metadata.status == "completed"  # one bad host doesn't fail the run
+    assert any("grab worker failed for 203.0.113.8" in r.message for r in caplog.records)

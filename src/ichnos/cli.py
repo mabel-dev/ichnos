@@ -210,6 +210,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
         gateway_mac=settings.zmap_gateway_mac or None,
         cooldown_seconds=settings.zmap_cooldown_seconds,
         rate_pps=settings.zmap_rate_pps,
+        grab_concurrency=settings.grab_concurrency,
         user_agent=settings.scan_user_agent,
     )
     _write_pending_outcome(settings, outcome)
