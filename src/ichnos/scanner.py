@@ -19,9 +19,12 @@ showed a low, stable hit rate and no operational issues, then to 4pps after two 
 hours of measured runs at 2pps, and now to 8pps - that last one deployed ahead of its
 observation window rather than after it, with the window (7h45m, 93 runs, median 803.3s
 against a predicted 803s, no skipped ticks) run immediately afterwards to confirm it,
-and now 16pps. See config.py's zmap_rate_pps for the measurements, for the grab backlog
-that actually binds as candidates grow, and for why run duration is a late signal rather
-than an early one in this series. All of these rates are far looser than this
+then 16pps, and now 32pps. See config.py's zmap_rate_pps for the measurements, for why
+run duration is a late signal rather than an early one in this series, and for the grab
+backlog - which is the thing that actually binds, and which caps this design somewhere
+around 50pps regardless of slice size, because grabs below are serial in the reader loop
+and their share of a run's window is proportional to the rate. All of these rates are
+far looser than this
 project's original "one request per 5 seconds" MVP figure, which was our own
 conservatism, not a hard requirement.
 

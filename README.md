@@ -20,7 +20,7 @@ identity](#scanner-identity) below.
 
 - **Protocols**: HTTP, HTTPS, and SSH.
 - **Discovery vs refresh**: `scan` runs native ZMap discovery (rate-limited via ZMap's
-  own `--rate`, `ICHNOS_ZMAP_RATE_PPS` - 16 pps as of the latest adjustment, see
+  own `--rate`, `ICHNOS_ZMAP_RATE_PPS` - 32 pps as of the latest adjustment, see
   `config.py`'s `zmap_rate_pps`) over addresses that aren't already known-responsive,
   continuously. `refresh` re-tests every already-known-responsive host directly via
   ZGrab2 (no ZMap involved) to detect drift, on a more relaxed cadence. See `cli.py`'s

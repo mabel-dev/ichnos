@@ -140,7 +140,38 @@ class Settings:
     # intervention, being firewalled) arrives out-of-band days later and never appears
     # in these logs at all. "No skipped ticks" means the box is coping. It does not mean
     # the rate is acceptable to anyone else.
-    zmap_rate_pps: int = 16
+    #
+    # 16pps was then measured over 21 runs (7 per protocol, 12800 candidates on the old
+    # 15-minute cadence): median 803.3s against a predicted 803.0, no skipped ticks, no
+    # ZMap failures. The spread is the interesting part - http peaked at 819.6s (+2.07%)
+    # and ssh at 803.5s (+0.06%), but https reached 864.3s (+7.64%). https has the
+    # highest hit rate, so the most grabs and the most 30s timeouts, and that run's grab
+    # backlog ran ~61s past ZMap finishing. That is the first time the backlog has shown
+    # up as real variance rather than as a projection, and it is what sizes the buffer
+    # in variables.tf.
+    #
+    # Now 32pps, with 105000 candidates per hourly run (~3284s, 9.6% buffer).
+    #
+    # This is expected to be the last doubling this architecture supports, and the
+    # reason is worth stating precisely because it is not a tuning problem. Grab work
+    # scales with candidates; the run window is candidates/rate; so the share of the
+    # window spent grabbing is proportional to *rate*, and is completely independent of
+    # the slice size, the cron cadence and the buffer:
+    #
+    #      8pps   ~11% of the window   (measured)
+    #     16pps   ~30%                 (measured)
+    #     32pps   ~60%                 (projected)
+    #     64pps   ~120%                - cannot fit, at any slice size
+    #
+    # Grabs currently run inline in the reader loop, one host at a time, at up to 30s
+    # each on timeout (_grab_and_record, called from _stream_discover_and_grab). They
+    # overlap ZMap's paced sending through the stdout pipe buffer, which is why runs
+    # finish at the predicted time despite substantial grab load - but they do not
+    # overlap *each other*, so past ~50pps the loop cannot drain a run's hits within
+    # that run's window no matter how the window is sized. Going beyond this rate needs
+    # a bounded worker pool for the ZGrab2 calls first; that is a change to make before
+    # the rate that requires it, not after a wave of skipped hours reveals it.
+    zmap_rate_pps: int = 32
 
     # User-Agent sent by ZGrab2's http module. AWS's network-scanning guidelines
     # (repost.aws, "AWS Guidelines for network scanning") ask under their "identifiable"
