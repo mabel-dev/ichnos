@@ -60,6 +60,7 @@ from .publish import PublishBatch
 from .publish import PublishError
 from .publish import append_ndjson
 from .publish import clear_pending
+from .publish import exclusion_rows
 from .publish import publish_hour
 from .publish import read_pending_datasets
 from .ratelimit import TokenBucket
@@ -256,9 +257,6 @@ def cmd_refresh(args: argparse.Namespace) -> int:
 def cmd_publish(args: argparse.Namespace) -> int:
     settings = Settings.from_env()
     datasets = read_pending_datasets(settings.pending_dir)
-    if not datasets:
-        logger.info("nothing pending to publish")
-        return 0
 
     if not settings.opteryx_client_id or not settings.opteryx_client_secret:
         logger.error(
@@ -266,6 +264,15 @@ def cmd_publish(args: argparse.Namespace) -> int:
             "cannot authenticate to the Opteryx Upload Service"
         )
         return 1
+
+    # Published every cycle regardless of whether any scanning happened, and
+    # deliberately not gated on "is there anything pending" the way the scan-produced
+    # datasets are. It is committed with OVERWRITE (see publish.OVERWRITE_DATASETS), so
+    # skipping a cycle leaves a stale generation published; an opt-out withdrawn during
+    # an idle hour has to propagate just as promptly as one withdrawn during a busy one.
+    # exclusion_rows() always returns at least the sentinel, so this is never empty.
+    store = _build_store(args.store, settings)
+    datasets["exclusions"] = exclusion_rows(store.exclusions.list_all())
 
     from opteryx_upload import PATAuthenticator
     from opteryx_upload import UploadClient
@@ -383,6 +390,9 @@ def build_parser() -> argparse.ArgumentParser:
     refresh.set_defaults(func=cmd_refresh)
 
     publish = subparsers.add_parser("publish", help="commit pending rows to Opteryx")
+    # Needed since the batch now includes an `exclusions` snapshot read from the store,
+    # not just the scan-produced rows accumulated in pending_dir.
+    publish.add_argument("--store", choices=["dynamodb", "memory"], default="dynamodb")
     publish.set_defaults(func=cmd_publish)
 
     jrefresh = subparsers.add_parser(
