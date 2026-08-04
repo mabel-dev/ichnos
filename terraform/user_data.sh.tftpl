@@ -260,6 +260,16 @@ if [ ! -d /etc/letsencrypt/live/${domain_name} ]; then
     tar -xzpf /tmp/letsencrypt.tar.gz -C /
     rm -f /tmp/letsencrypt.tar.gz
     echo "restored certificate from s3://${cert_s3_bucket}/${cert_s3_key}"
+    # Run the hook explicitly, because restoring is precisely the case where certbot
+    # will NOT run it: the deploy hook fires on issuance and renewal only, and a
+    # restored certificate is valid, so --keep-until-expiring makes certbot a no-op.
+    # The hook is what writes nginx's 443 server block, so without this nginx comes up
+    # listening on port 80 alone and the site has no TLS despite holding a perfectly
+    # good certificate. That is exactly what happened on the first rebuild after cert
+    # persistence landed - the certificate restored correctly and the site was still
+    # down, because "we have a certificate" and "nginx has been told about it" were
+    # two different things.
+    /etc/ichnos/certbot-deploy-hook.sh || echo "deploy hook failed after restore - nginx may lack its TLS config"
   else
     echo "no certificate backup at s3://${cert_s3_bucket}/${cert_s3_key} - certbot will issue a new one"
   fi
