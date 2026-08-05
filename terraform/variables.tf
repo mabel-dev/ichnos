@@ -17,9 +17,26 @@ variable "project_name" {
 }
 
 variable "instance_type" {
-  description = "EC2 instance type. Must be an arm64 (Graviton) type - the AMI lookup is arm64-only."
+  description = <<-EOT
+    EC2 instance type. Must be an arm64 (Graviton) type - the AMI lookup is arm64-only.
+
+    Fixed-performance, not burstable, and that is the point. This ran on a t4g.small
+    until the workload outgrew it: measured at ~41% of 2 vCPUs sustained against a 20%
+    baseline, so the credit balance sat at zero and surplus accrued at ~27 credits an
+    hour - roughly $13/month on top of the $12.26 base, for an instance that was still
+    CPU-starved. Burstable pricing is a discount for being idle, and a scanner that
+    runs 52 minutes of every 60 is never idle; the credit model was giving us nothing
+    but an accounting layer over a machine that was too small.
+
+    c6g.large is 2 fixed vCPUs and 4 GiB. Both halves matter: load average was 1.55 on
+    the old box, and memory ran to 1.1 GiB of 1.8 GiB with only two of a possible 24
+    concurrent zgrab2 workers alive, so 2 GiB variants (a1.medium, c6g.medium,
+    c7g.medium) are ruled out by RAM as much as by having a single vCPU. a1 is ruled
+    out separately - Graviton1 is materially slower per core than the Graviton2 this
+    replaces, so it would have been a downgrade at a lower price.
+  EOT
   type        = string
-  default     = "t4g.small"
+  default     = "c6g.large"
 }
 
 variable "abuse_email" {
