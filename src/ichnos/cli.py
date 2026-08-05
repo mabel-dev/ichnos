@@ -209,7 +209,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
         target_ip=args.target,
         gateway_mac=settings.zmap_gateway_mac or None,
         cooldown_seconds=settings.zmap_cooldown_seconds,
-        rate_pps=settings.zmap_rate_pps,
+        rate_pps=args.rate_pps or settings.zmap_rate_pps,
         grab_concurrency=settings.grab_concurrency,
         user_agent=settings.scan_user_agent,
     )
@@ -453,6 +453,20 @@ def build_parser() -> argparse.ArgumentParser:
     scan = subparsers.add_parser("scan", help="run one throttled scan for a protocol")
     scan.add_argument("--protocol", required=True)
     scan.add_argument("--candidates", type=int, default=12)
+    scan.add_argument(
+        "--rate-pps",
+        type=int,
+        default=None,
+        dest="rate_pps",
+        help=(
+            "ZMap --rate for this run, overriding ICHNOS_ZMAP_RATE_PPS. Set per "
+            "protocol by cron, because the protocols do not cost the same: a run's "
+            "grab load is candidates x hit rate, and the measured hit rates differ by "
+            "more than 2x (https 1.71%%, http 1.52%%, ssh 0.77%%), so an equal "
+            "candidate count means unequal work. Sizing candidates and rate together "
+            "per protocol keeps every run inside the same hourly window."
+        ),
+    )
     scan.add_argument("--seed", type=int, default=None)
     scan.add_argument(
         "--target",

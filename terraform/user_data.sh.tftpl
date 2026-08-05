@@ -118,8 +118,10 @@ ICHNOS_RATE_INTERVAL_SECONDS=${rate_interval_seconds}
 # the discovery rate is the value most likely to be retuned, and until this line existed
 # changing it meant reinstalling the package from git on the instance - the one setting
 # that couldn't be adjusted the way config.py's docstring says they all can. Keep it in
-# step with scan_candidates_per_cron_tick (variables.tf): the two are sized together so
-# a run still fits the cron interval, and moving one alone changes how long a scan takes.
+# step with scan_protocol_budgets (variables.tf), which sets rate and candidates
+# together per protocol: the two are sized as a pair so a run still fits the cron
+# interval, and moving one alone changes how long a scan takes. This env value is only
+# the fallback for runs that do not pass --rate-pps.
 ICHNOS_ZMAP_RATE_PPS=${zmap_rate_pps}
 ICHNOS_ZMAP_GATEWAY_MAC='$GATEWAY_MAC'
 ICHNOS_OPTERYX_WORKSPACE='${opteryx_workspace}'
@@ -314,8 +316,8 @@ systemctl enable --now ichnos-web
 # ahead of the 04:00 refresh that consumes it), publish hourly, jurisdiction-refresh
 # weekly, certbot retry/renewal every 30 min (see note above).
 #
-# Native discovery is sized (scan_candidates_per_cron_tick, see variables.tf) to use
-# most of the hour but not all of it - `flock -n` is the actual safety net: if a run
+# Native discovery is sized per protocol (scan_protocol_budgets, see variables.tf) to
+# use most of the hour but not all of it - `flock -n` is the actual safety net: if a run
 # ever does overrun into the next tick, the overlapping invocation exits immediately
 # instead of running concurrently with the still-active one, which would otherwise
 # silently double the effective scan rate for that protocol. -n means "skip, don't
@@ -332,9 +334,9 @@ systemctl enable --now ichnos-web
 # it finishes, and shortening the gap between "finished" and "published" is the
 # cheapest way to narrow that exposure without restructuring the writer. ---
 cat > /etc/cron.d/ichnos <<CRONEOF
-6 * * * * root flock -n /var/lock/ichnos-scan-http.lock bash -c 'set -a; . /etc/ichnos/env; set +a; /opt/ichnos-venv/bin/ichnos scan --protocol http --candidates ${scan_candidates_per_cron_tick} --store dynamodb >> /var/log/ichnos/scan-http.log 2>&1'
-6 * * * * root flock -n /var/lock/ichnos-scan-https.lock bash -c 'set -a; . /etc/ichnos/env; set +a; /opt/ichnos-venv/bin/ichnos scan --protocol https --candidates ${scan_candidates_per_cron_tick} --store dynamodb >> /var/log/ichnos/scan-https.log 2>&1'
-6 * * * * root flock -n /var/lock/ichnos-scan-ssh.lock bash -c 'set -a; . /etc/ichnos/env; set +a; /opt/ichnos-venv/bin/ichnos scan --protocol ssh --candidates ${scan_candidates_per_cron_tick} --store dynamodb >> /var/log/ichnos/scan-ssh.log 2>&1'
+%{ for proto, budget in scan_protocol_budgets ~}
+6 * * * * root flock -n /var/lock/ichnos-scan-${proto}.lock bash -c 'set -a; . /etc/ichnos/env; set +a; /opt/ichnos-venv/bin/ichnos scan --protocol ${proto} --candidates ${budget.candidates} --rate-pps ${budget.rate_pps} --store dynamodb >> /var/log/ichnos/scan-${proto}.log 2>&1'
+%{ endfor ~}
 0 4 * * * root flock -n /var/lock/ichnos-refresh-http.lock bash -c 'set -a; . /etc/ichnos/env; set +a; /opt/ichnos-venv/bin/ichnos refresh --protocol http --store dynamodb >> /var/log/ichnos/refresh-http.log 2>&1'
 0 4 * * * root flock -n /var/lock/ichnos-refresh-https.lock bash -c 'set -a; . /etc/ichnos/env; set +a; /opt/ichnos-venv/bin/ichnos refresh --protocol https --store dynamodb >> /var/log/ichnos/refresh-https.log 2>&1'
 0 4 * * * root flock -n /var/lock/ichnos-refresh-ssh.lock bash -c 'set -a; . /etc/ichnos/env; set +a; /opt/ichnos-venv/bin/ichnos refresh --protocol ssh --store dynamodb >> /var/log/ichnos/refresh-ssh.log 2>&1'

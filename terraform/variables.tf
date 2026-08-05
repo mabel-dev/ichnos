@@ -52,16 +52,40 @@ variable "rate_interval_seconds" {
 }
 
 variable "zmap_rate_pps" {
-  description = "Native ZMap discovery rate in whole packets/second (`--rate` rejects fractional values). Mirrors config.py's `zmap_rate_pps` default, which documents how the current figure was arrived at and what to watch after changing it. Sized jointly with `scan_candidates_per_cron_tick` - a run takes roughly `candidates / rate_pps + cooldown_seconds`, so changing this alone changes how much of the hourly cron interval a run consumes."
+  description = "Native ZMap discovery rate in whole packets/second (`--rate` rejects fractional values). Mirrors config.py's `zmap_rate_pps` default, which documents how the current figure was arrived at and what to watch after changing it. This is only the fallback for runs that do not pass `--rate-pps`; the hourly cron entries set rate and candidates together per protocol, see `scan_protocol_budgets`."
   type        = number
   default     = 32
 }
 
-variable "scan_candidates_per_cron_tick" {
-  description = "Candidates per `ichnos scan` invocation - sized so one run takes roughly as long as the cron interval between invocations (see cli.py's module docstring). Native ZMap discovery runs at config.py's zmap_rate_pps (32 pps), so one run takes roughly `candidates / rate_pps + cooldown_seconds` - at the defaults, 105000 candidates takes ~3284s (~54.7 min), leaving a 316s buffer inside the hourly cron interval. There is little room above that figure: 110000 leaves only 4.6% and would not survive the variance measured at 16pps, and the whole sizing depends on the rate being 32 - at 30pps the same candidate count leaves 2.8% and overruns. Sized on *relative* buffer, not absolute: run-to-run variance comes from the serial ZGrab2 backlog, which scales with the candidate count, so the buffer has to scale with it too. 21 measured runs at 12800-in-15-minutes had a median of 803.3s against a predicted 803.0 but a worst case of 864.3s (+7.64%, an https run - highest hit rate, most grabs, most 30s timeouts), comfortably inside that window's 12.1% buffer. Reproducing that same relative overrun on an hourly run needs ~10% of headroom to survive it: 56000 leaves 2.77% and would overrun by 170s, 54000 leaves 6.57% and still overruns. Because the cron entries are flock-guarded (user_data.sh.tftpl) an overrun does not just run long - it skips the following hour, so the cost of undersizing the buffer is a lost hour, not a late finish. At 105000 hourly this is 2,520,000 per protocol per day, 7,560,000 across the three - about 3.3 years to cover 3e9 addresses if nothing were ever sampled twice, which with the per-tick random seed means roughly 63% coverage by then rather than a sweep (see cli.py's seed derivation). The trade taken when this moved from 15-minute to hourly slices was coarser observability and a larger unit of loss on an unclean exit, since cmd_scan writes nothing to pending_dir until a run completes."
-  type        = number
-  default     = 105000
+variable "scan_protocol_budgets" {
+  description = <<-EOT
+    Per-protocol discovery budget: candidates per hourly run, and the ZMap `--rate` to
+    spend them at. One run takes roughly `candidates / rate_pps + cooldown_seconds`, so
+    the pair has to be sized together - at these values every protocol takes ~3128s and
+    leaves a 472s (15.1%) buffer inside the hourly cron interval.
+
+    Split per protocol because they do not cost the same. A run's grab load is
+    candidates x hit rate, and the measured rates differ by more than 2x - https 1.71%
+    responsive, http 1.52%, ssh 0.77% - so an equal candidate count buys unequal work.
+    https was the protocol that skipped a tick overnight at a uniform 105000/32pps,
+    being the one that finds the most hosts to grab; ssh has by far the most headroom.
+
+    A budget that does not fit the hour is not merely tight: the cron entries are
+    flock-guarded, so an overrunning run skips the following one. 150000 at 32pps would
+    take 4690s against a 3600s hour and lose every other run - which is why the higher
+    candidate counts carry the higher rate rather than sharing one.
+  EOT
+  type = map(object({
+    candidates = number
+    rate_pps   = number
+  }))
+  default = {
+    http  = { candidates = 150000, rate_pps = 48 }
+    https = { candidates = 100000, rate_pps = 32 }
+    ssh   = { candidates = 150000, rate_pps = 48 }
+  }
 }
+
 
 variable "ichnos_git_url" {
   description = "Git URL the instance installs the ichnos package from (not yet published to PyPI)."

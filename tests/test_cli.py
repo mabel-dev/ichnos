@@ -333,3 +333,34 @@ def test_cmd_responsive_refresh_enumerates_scheduled_protocols(monkeypatch, tmp_
 
     assert rc == 0
     assert sorted(refreshed) == ["http", "https"]  # ssh is disabled, so not built
+
+
+def test_scan_rate_pps_argument_overrides_the_env_default(monkeypatch, tmp_path):
+    """Cron sets rate per protocol because the protocols do not cost the same, so the
+    CLI flag has to win over ICHNOS_ZMAP_RATE_PPS. The env value stays as the fallback
+    for ad-hoc runs that pass no flag - if the flag were ignored, every protocol would
+    silently scan at the env rate and the budgets would no longer fit the hour."""
+    store = InMemoryStore()
+    store.schedule.put(ScheduleEntry(protocol="http", port=80, zgrab2_module="http"))
+    monkeypatch.setattr(cli_module, "InMemoryStore", lambda: store)
+
+    captured = {}
+
+    def fake_run_scan(**kwargs):
+        captured.update(kwargs)
+        return ScanRunOutcome(metadata=ScanMetadataRecord(
+            scan_id="s", protocol="http", started_at=datetime.now(timezone.utc)))
+
+    monkeypatch.setattr(cli_module, "run_scan", fake_run_scan)
+    monkeypatch.setenv("ICHNOS_ZMAP_RATE_PPS", "32")
+    monkeypatch.setenv("ICHNOS_BLOCKLIST_PATH", str(tmp_path / "blocklist.conf"))
+    monkeypatch.setenv("ICHNOS_PENDING_DIR", str(tmp_path / "pending"))
+    monkeypatch.delenv("ICHNOS_JURISDICTION_S3_BUCKET", raising=False)
+
+    base = dict(protocol="http", candidates=150000, seed=None, target=None, store="memory")
+    cli_module.cmd_scan(SimpleNamespace(rate_pps=48, **base))
+    assert captured["rate_pps"] == 48  # flag wins
+
+    captured.clear()
+    cli_module.cmd_scan(SimpleNamespace(rate_pps=None, **base))
+    assert captured["rate_pps"] == 32  # falls back to the env default
