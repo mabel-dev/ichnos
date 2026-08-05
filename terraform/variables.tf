@@ -106,9 +106,17 @@ variable "scan_protocol_budgets" {
     400000, 91.4% at 650000) fit candidates^1.7, so each increment costs more than the
     last. Extrapolating linearly from a single point is what got this wrong.
 
-    575000 projects to ~74-76% on that curve - from two points rather than one, so
-    still a projection, but a better-founded one. If runs come in near 3128s and CPU
-    under ~80%, this is the ceiling for 2 vCPUs; 650000+ wants c6g.xlarge.
+    575000 was then tried on that curve, projected at ~74-76%, and measured 89.6%
+    average and 96.2% peak - essentially identical to 650000 despite 12% fewer
+    candidates, with runs overrunning 10-16% and two of three ticks skipped. So the
+    curve was numerology: CPU pins near 90% at both, which means something saturates
+    that is not proportional to candidate count in the way two points suggested.
+
+    Two failed projections in a row is enough. 450000 is a bisect step above the one
+    configuration with real evidence behind it - 400000, fifteen runs, +0.2 to +1.1%
+    over predicted, 40% CPU - and nothing here is predicted, only measured. If it comes
+    in near 3128s the next step is 500000; if it does not, 400000 is the ceiling for 2
+    vCPUs and more throughput wants c6g.xlarge rather than more tuning.
 
     ssh carries the largest candidate count because it is the cheapest per candidate:
     a 0.75% hit rate against http's 1.51% and https's 1.66%, so it buys the most
@@ -120,9 +128,9 @@ variable "scan_protocol_budgets" {
     rate_pps   = number
   }))
   default = {
-    http  = { candidates = 175000, rate_pps = 56 }
-    https = { candidates = 150000, rate_pps = 48 }
-    ssh   = { candidates = 250000, rate_pps = 80 }
+    http  = { candidates = 125000, rate_pps = 40 }
+    https = { candidates = 125000, rate_pps = 40 }
+    ssh   = { candidates = 200000, rate_pps = 64 }
   }
 }
 
