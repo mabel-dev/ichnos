@@ -20,7 +20,6 @@ locals {
     scanner_public_ip      = aws_eip.scanner.public_ip
     exclusions_table       = aws_dynamodb_table.exclusions.name
     schedule_table         = aws_dynamodb_table.scan_schedule.name
-    current_state_table    = aws_dynamodb_table.current_state.name
     version_index_table    = aws_dynamodb_table.version_index.name
     rate_interval_seconds  = var.rate_interval_seconds
     zmap_rate_pps          = var.zmap_rate_pps

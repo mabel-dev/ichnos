@@ -163,6 +163,39 @@ def iter_rows(
     logger.info("odata: %s read in %d page(s)", path, pages)
 
 
+def grouped_max(
+    path: str,
+    column: str,
+    max_column: str,
+    alias: str,
+    *,
+    where: str = "",
+    token: Optional[str] = None,
+    base_url: str = DEFAULT_ODATA_BASE,
+    prefix: str = DEFAULT_ODATA_PREFIX,
+    top: int = MAX_TOP,
+    get: Optional[Callable[..., Any]] = None,
+) -> List[Dict[str, Any]]:
+    """One row per distinct `column`, carrying `max(max_column)` as `alias`.
+
+    `$apply=filter(...)/groupby((col),aggregate(other with max as alias))`, confirmed
+    against the live feed. The aggregate is what turns a plain distinct list into an
+    ordered one without a second query or a stored cursor - see responsive.py.
+
+    Note the feed will not `$orderby` an aggregate alias, so callers sort the result
+    themselves; at the sizes this returns that is trivial next to the transfer saved by
+    aggregating server-side.
+    """
+    inner = f"groupby(({column}),aggregate({max_column} with max as {alias}))"
+    apply_expr = f"filter({where})/{inner}" if where else inner
+    query = f"$apply={quote(apply_expr, safe='()/,')}&$top={top}"
+    return [
+        row
+        for row in iter_rows(path, query, token=token, base_url=base_url, prefix=prefix, get=get)
+        if row.get(column) is not None
+    ]
+
+
 def distinct_values(
     path: str,
     column: str,

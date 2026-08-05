@@ -1,23 +1,22 @@
 """The known-responsive host list, derived from published Observations.
 
-Which addresses have answered recently is the one question `CurrentState` exists to
-answer (see storage/base.py), and it is asked twice: discovery excludes these hosts so
-its candidates go to unknown space, and `refresh` uses them as its target list. Both
-answers are a *set of addresses* - neither reads the fingerprint CurrentState stores
-alongside them - and both are reconstructable from the `observations` dataset, which
-already records every responsive host with its protocol and timestamp.
+Which addresses have answered recently is asked twice: discovery excludes them so its
+candidates go to unknown space, and `refresh` uses them as its target list, oldest
+checked first. A DynamoDB table (`CurrentState`) used to answer both, and this replaced
+it entirely - everything either caller needs is already in the `observations` dataset,
+which records every responsive host with its protocol and timestamp.
 
-Deriving it here instead of scanning DynamoDB changes three things:
+That swap changed three things:
 
-The per-tick full-table scan goes away. `_rebuild_blocklist` called
+The per-tick full-table scan went away. `_rebuild_blocklist` called
 `current_state.list_all()` before every run - a DynamoDB Scan (a filtered one, so it
-reads the whole table and discards two thirds) 288 times a day against a table growing
-by tens of thousands of rows a day.
+read the whole table and discarded two thirds), three times an hour against a table
+that reached 124,357 items and was still growing by tens of thousands a day.
 
-The list becomes bounded and self-healing. CurrentState is permanent: a host that
-answered once is excluded from discovery forever, so the blind spot only ever grows.
-A rolling window means addresses that go dark re-enter the candidate pool, and
-discovery can re-find a host that changed hands or came back.
+The list became bounded and self-healing. The table was permanent: a host that answered
+once was excluded from discovery forever, so the blind spot only ever grew. A rolling
+window means addresses that go dark re-enter the candidate pool, and discovery can
+re-find a host that changed hands or came back.
 
 And it introduces a lag - the list is only as fresh as the last refresh. That is
 affordable at this address-space size: a newly-found host sits in the candidate pool
@@ -41,10 +40,11 @@ from datetime import timezone
 from typing import Callable
 from typing import List
 from typing import Optional
+from typing import Tuple
 
 from .logging_setup import get_logger
 from .odata import ODataError
-from .odata import distinct_values
+from .odata import grouped_max
 
 logger = get_logger(__name__)
 
@@ -71,7 +71,7 @@ def window_start(now: datetime, window_days: int = DEFAULT_WINDOW_DAYS) -> str:
     return (now - timedelta(days=window_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def fetch_responsive_ips(
+def fetch_responsive_hosts(
     protocol: str,
     *,
     workspace: str,
@@ -81,13 +81,22 @@ def fetch_responsive_ips(
     window_days: int = DEFAULT_WINDOW_DAYS,
     base_url: Optional[str] = None,
     get: Optional[Callable] = None,
-) -> List[str]:
-    """Distinct IPs that answered `protocol` within the window.
+) -> List[Tuple[str, str]]:
+    """(ip, last_seen) for every host that answered `protocol` within the window,
+    oldest-seen first.
 
     `response_status eq 'success'` and not merely "we have a row": observations are also
     written for `closed` (an RST - the host is up but the port is refused) and
     `grab-failed`. Neither belongs in this list. A closed port is exactly the kind of
     address discovery should keep sampling, and refresh has nothing to re-grab there.
+
+    The `last_seen` half is what lets CurrentState go. Refresh works oldest-checked
+    first, and that ordering used to come from a CurrentState column this code kept
+    up to date. It comes from the observations themselves now: refresh writes an
+    Observation for every host it re-checks, publish commits it within the hour, and
+    the next derivation sees the newer max(observed_at) and sorts that host to the
+    back. The cursor advances through the data pipeline rather than through a table
+    maintained on the side.
     """
     now = now or datetime.now(timezone.utc)
     where = (
@@ -97,30 +106,54 @@ def fetch_responsive_ips(
     kwargs = {"where": where, "token": token, "get": get}
     if base_url:
         kwargs["base_url"] = base_url
-    return distinct_values(
-        f"{workspace}/{collection}/{OBSERVATIONS_DATASET}", "ip", **kwargs
+    rows = grouped_max(
+        f"{workspace}/{collection}/{OBSERVATIONS_DATASET}",
+        "ip", "observed_at", "last_seen", **kwargs
+    )
+    return sorted(
+        ((r["ip"], r.get("last_seen") or "") for r in rows), key=lambda pair: pair[1]
     )
 
 
-def write_responsive_file(path: str, ips: List[str]) -> None:
-    """One address per line. Written to a temp file and atomically renamed, for the same
-    reason write_blocklist_file is (blocklist.py): a reader can otherwise catch a
-    half-written file, and this one is read at the start of every scan."""
+def write_responsive_file(path: str, hosts: List[Tuple[str, str]]) -> None:
+    """`<ip> <last_seen>` per line, in the order given - which fetch_responsive_hosts
+    leaves oldest-first, so refresh can stream the file and stop when its budget runs
+    out without sorting anything itself.
+
+    Written to a temp file and atomically renamed, for the same reason
+    write_blocklist_file is (blocklist.py): a reader can otherwise catch a half-written
+    file, and this one is read at the start of every scan."""
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     tmp_path = f"{path}.tmp"
     with open(tmp_path, "w") as f:
-        for ip in ips:
-            f.write(f"{ip}\n")
+        for ip, last_seen in hosts:
+            f.write(f"{ip} {last_seen}\n")
     os.replace(tmp_path, path)
 
 
-def read_responsive_file(path: str) -> List[str]:
-    """Read a previously-written list. A missing file is an empty list, not an error -
-    a freshly-built instance has no copy yet, and that must not stop it scanning."""
+def read_responsive_hosts(path: str) -> List[Tuple[str, str]]:
+    """Read back `<ip> <last_seen>` pairs, preserving file order (oldest-first).
+
+    A missing file is an empty list, not an error - a freshly-built instance has no
+    copy until the boot-time derivation runs, and that must not stop it scanning.
+    Lines carrying only an address are tolerated so an older file still parses; they
+    sort first, which for refresh means "check these soonest" - the safe reading of
+    "we do not know when this was last seen"."""
     if not os.path.exists(path):
         return []
+    hosts = []
     with open(path) as f:
-        return [line.strip() for line in f if line.strip()]
+        for line in f:
+            parts = line.split()
+            if parts:
+                hosts.append((parts[0], parts[1] if len(parts) > 1 else ""))
+    return hosts
+
+
+def read_responsive_file(path: str) -> List[str]:
+    """Just the addresses, for the blocklist layer - which does not care when a host
+    was last seen, only that discovery should skip it."""
+    return [ip for ip, _ in read_responsive_hosts(path)]
 
 
 def refresh_protocol(
@@ -143,7 +176,7 @@ def refresh_protocol(
     list and discovery spends the next day re-finding everything it already knew.
     """
     try:
-        ips = fetch_responsive_ips(
+        hosts = fetch_responsive_hosts(
             protocol,
             workspace=workspace,
             collection=collection,
@@ -156,10 +189,13 @@ def refresh_protocol(
     except ODataError as exc:
         logger.error(
             "responsive-refresh %s: read failed, keeping the existing list (%d entries): %s",
-            protocol, len(read_responsive_file(path)), exc,
+            protocol, len(read_responsive_hosts(path)), exc,
         )
         return False
 
-    write_responsive_file(path, ips)
-    logger.info("responsive-refresh %s: %d responsive hosts -> %s", protocol, len(ips), path)
+    write_responsive_file(path, hosts)
+    logger.info(
+        "responsive-refresh %s: %d responsive hosts -> %s (oldest %s)",
+        protocol, len(hosts), path, hosts[0][1] if hosts else "n/a",
+    )
     return True

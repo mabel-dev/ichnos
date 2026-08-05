@@ -31,7 +31,6 @@ output "dynamodb_tables" {
   value = {
     exclusions    = aws_dynamodb_table.exclusions.name
     schedule      = aws_dynamodb_table.scan_schedule.name
-    current_state = aws_dynamodb_table.current_state.name
     version_index = aws_dynamodb_table.version_index.name
   }
 }

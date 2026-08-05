@@ -13,7 +13,6 @@ from typing import Iterable
 from typing import List
 from typing import Optional
 
-from ..models import CurrentStateRecord
 from ..models import Exclusion
 from ..models import ScheduleEntry
 
@@ -42,34 +41,15 @@ class ScheduleStore(ABC):
         ...
 
 
-class CurrentStateStore(ABC):
-    @abstractmethod
-    def get(self, protocol: str, ip: str, port: int) -> Optional[CurrentStateRecord]:
-        ...
-
-    @abstractmethod
-    def put(self, record: CurrentStateRecord) -> None:
-        ...
-
-    @abstractmethod
-    def list_all(self, protocol: str) -> List[CurrentStateRecord]:
-        """Every known-responsive host for `protocol` - the refresh scan's target
-        list, and the set discovery excludes so it doesn't keep re-finding hosts
-        refresh already covers."""
-
-    @abstractmethod
-    def count(self) -> int:
-        """Item count - exposed as a CloudWatch metric, a proxy for storage growth."""
-
-
 class VersionIndexStore(ABC):
     @abstractmethod
     def claim(self, fingerprint_id: str) -> bool:
         """Record `fingerprint_id` as published, returning True only for the caller that
         actually inserted it - False means some earlier call already did.
 
-        `CurrentStateStore` above answers "has *this host* changed?", which is the right
-        question for emitting an Observation but the wrong one for emitting a Version:
+        Emitting an Observation asks "what is this host serving now?", which every
+        Observation records directly. This asks something different, and the two were
+        conflated once:
         the fingerprint is a hash of the response payload alone, with no host in it
         (fingerprint.py), so a payload served identically by many hosts is genuinely the
         same fingerprint. Deduping per host meant every one of those hosts appended its
@@ -89,5 +69,4 @@ class Store(ABC):
 
     exclusions: ExclusionStore
     schedule: ScheduleStore
-    current_state: CurrentStateStore
     version_index: VersionIndexStore

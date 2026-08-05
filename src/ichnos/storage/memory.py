@@ -6,10 +6,8 @@ from typing import List
 from typing import Optional
 from typing import Set
 
-from ..models import CurrentStateRecord
 from ..models import Exclusion
 from ..models import ScheduleEntry
-from .base import CurrentStateStore
 from .base import ExclusionStore
 from .base import ScheduleStore
 from .base import Store
@@ -41,23 +39,6 @@ class _MemoryScheduleStore(ScheduleStore):
         self._rows[entry.protocol] = entry
 
 
-class _MemoryCurrentStateStore(CurrentStateStore):
-    def __init__(self) -> None:
-        self._rows: Dict[str, CurrentStateRecord] = {}
-
-    def get(self, protocol: str, ip: str, port: int) -> Optional[CurrentStateRecord]:
-        return self._rows.get(f"{protocol}#{ip}#{port}")
-
-    def put(self, record: CurrentStateRecord) -> None:
-        self._rows[record.key] = record
-
-    def list_all(self, protocol: str) -> List[CurrentStateRecord]:
-        return [r for r in self._rows.values() if r.protocol == protocol]
-
-    def count(self) -> int:
-        return len(self._rows)
-
-
 class _MemoryVersionIndexStore(VersionIndexStore):
     def __init__(self) -> None:
         self._seen: Set[str] = set()
@@ -73,5 +54,4 @@ class InMemoryStore(Store):
     def __init__(self) -> None:
         self.exclusions = _MemoryExclusionStore()
         self.schedule = _MemoryScheduleStore()
-        self.current_state = _MemoryCurrentStateStore()
         self.version_index = _MemoryVersionIndexStore()

@@ -3,7 +3,6 @@ from types import SimpleNamespace
 from datetime import timezone
 
 import ichnos.cli as cli_module
-from ichnos.models import CurrentStateRecord
 from ichnos.models import ScheduleEntry
 from ichnos.scanner import ScanRunOutcome
 from ichnos.models import ScanMetadataRecord
@@ -368,7 +367,7 @@ def test_scan_rate_pps_argument_overrides_the_env_default(monkeypatch, tmp_path)
     assert captured["rate_pps"] == 32  # falls back to the env default
 
 
-def test_cmd_scan_reads_the_derived_list_and_never_scans_currentstate(monkeypatch, tmp_path):
+def test_cmd_scan_reads_the_derived_list_for_its_exclusions(monkeypatch, tmp_path):
     """The per-tick `current_state.list_all()` was a DynamoDB Scan over a table that
     grew to 124,357 items in a day, three times an hour, purely to regenerate a
     blocklist. It is now read from the file responsive-refresh derives. This asserts
@@ -376,16 +375,10 @@ def test_cmd_scan_reads_the_derived_list_and_never_scans_currentstate(monkeypatc
     quietly reinstated the scan would restore the cost without anyone noticing."""
     store = InMemoryStore()
     store.schedule.put(ScheduleEntry(protocol="http", port=80, zgrab2_module="http"))
-    store.current_state.put(CurrentStateRecord(
-        protocol="http", ip="198.51.100.99", port=80,
-        fingerprint_id="fp", last_seen_date="2026-08-01",
-    ))
-
-    def fail_if_scanned(_protocol):
-        raise AssertionError("cmd_scan scanned CurrentState instead of reading the file")
-
-    monkeypatch.setattr(store.current_state, "list_all", fail_if_scanned)
     monkeypatch.setattr(cli_module, "InMemoryStore", lambda: store)
+    # The store has no current_state attribute at all now, so reinstating the Scan is
+    # an AttributeError rather than a silent regression - the guard is structural.
+    assert not hasattr(store, "current_state")
 
     responsive = tmp_path / "known-responsive-http.conf"
     responsive.write_text("203.0.113.7\n203.0.113.8\n")
@@ -407,8 +400,6 @@ def test_cmd_scan_reads_the_derived_list_and_never_scans_currentstate(monkeypatc
 
     assert rc == 0
     assert captured["exclusions"] == ["203.0.113.7", "203.0.113.8"]
-    # The CurrentState row is deliberately absent: the derived file is the source now.
-    assert "198.51.100.99" not in captured["exclusions"]
 
 
 def test_cmd_scan_still_runs_and_warns_when_the_derived_list_is_missing(monkeypatch, tmp_path):

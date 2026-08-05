@@ -1,7 +1,7 @@
 """Core record types shared across storage backends, the scanner, and the publisher.
 
 These mirror the operational-data tables in the design doc (Exclusions, ScanSchedule,
-ScanMetadata, CurrentState) plus the analytical rows that get batched to Opteryx.
+ScanMetadata) plus the analytical rows that get batched to Opteryx.
 """
 from __future__ import annotations
 
@@ -66,21 +66,6 @@ class ScanMetadataRecord:
     software_versions: Dict[str, str] = field(default_factory=dict)
     commit_id: Optional[str] = None
     rows_written: Optional[int] = None
-
-
-@dataclass(frozen=True)
-class CurrentStateRecord:
-    """One row of the CurrentState dedup index: protocol#ip#port -> latest fingerprint."""
-
-    protocol: str
-    ip: str
-    port: int
-    fingerprint_id: str
-    last_seen_date: str  # ISO date, not datetime - this is a daily dedup granularity
-
-    @property
-    def key(self) -> str:
-        return f"{self.protocol}#{self.ip}#{self.port}"
 
 
 @dataclass(frozen=True)

@@ -30,7 +30,6 @@ class Settings:
     # DynamoDB table names (design doc §3.1)
     exclusions_table: str = "Exclusions"
     schedule_table: str = "ScanSchedule"
-    current_state_table: str = "CurrentState"
     version_index_table: str = "VersionIndex"
 
     # Local filesystem paths on the worker
@@ -285,7 +284,6 @@ class Settings:
         return cls(
             exclusions_table=_env("EXCLUSIONS_TABLE", cls.exclusions_table),
             schedule_table=_env("SCHEDULE_TABLE", cls.schedule_table),
-            current_state_table=_env("CURRENT_STATE_TABLE", cls.current_state_table),
             version_index_table=_env("VERSION_INDEX_TABLE", cls.version_index_table),
             blocklist_path=_env("BLOCKLIST_PATH", cls.blocklist_path),
             jurisdiction_blocklist_path=_env(

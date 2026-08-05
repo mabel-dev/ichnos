@@ -5,7 +5,6 @@ from datetime import timezone
 
 import pytest
 
-from ichnos.models import CurrentStateRecord
 from ichnos.ratelimit import TokenBucket
 from ichnos.scanner import DEFAULT_ZMAP_COOLDOWN_SECONDS
 from ichnos.scanner import DEFAULT_ZMAP_RATE_PPS
@@ -76,7 +75,7 @@ def test_run_scan_builds_the_real_zmap_flags_not_blocklist():
     run_scan(
         scan_id="flag-test", protocol="http", port=80, zgrab2_module="http", seed=1,
         candidate_count=5, blocklist_path="/tmp/blocklist.conf", rate_limiter=limiter,
-        current_state=store.current_state, version_index=store.version_index,
+        version_index=store.version_index,
         clock=_fixed_clock(),
         popen=_fake_popen([], calls),
     )
@@ -97,7 +96,7 @@ def test_run_scan_uses_the_native_rate_flag_as_an_integer():
     run_scan(
         scan_id="rate-test", protocol="http", port=80, zgrab2_module="http", seed=1,
         candidate_count=5, blocklist_path="/tmp/x", rate_limiter=limiter,
-        current_state=store.current_state, version_index=store.version_index,
+        version_index=store.version_index,
         clock=_fixed_clock(),
         popen=_fake_popen([], calls),
     )
@@ -109,7 +108,7 @@ def test_run_scan_uses_the_native_rate_flag_as_an_integer():
     run_scan(
         scan_id="rate-test-2", protocol="http", port=80, zgrab2_module="http", seed=1,
         candidate_count=5, blocklist_path="/tmp/x", rate_limiter=limiter,
-        current_state=store.current_state, version_index=store.version_index,
+        version_index=store.version_index,
         clock=_fixed_clock(),
         popen=_fake_popen([], calls), rate_pps=7,
     )
@@ -124,7 +123,7 @@ def test_run_scan_passes_max_targets_seed_and_cooldown():
     run_scan(
         scan_id="params-test", protocol="http", port=80, zgrab2_module="http", seed=99,
         candidate_count=40, blocklist_path="/tmp/x", rate_limiter=limiter,
-        current_state=store.current_state, version_index=store.version_index,
+        version_index=store.version_index,
         clock=_fixed_clock(),
         popen=_fake_popen([], calls),
     )
@@ -147,7 +146,7 @@ def test_run_scan_overrides_the_output_filter_to_include_rst():
     run_scan(
         scan_id="filter-test", protocol="http", port=80, zgrab2_module="http", seed=1,
         candidate_count=5, blocklist_path="/tmp/x", rate_limiter=limiter,
-        current_state=store.current_state, version_index=store.version_index,
+        version_index=store.version_index,
         clock=_fixed_clock(),
         popen=_fake_popen([], calls),
     )
@@ -164,7 +163,7 @@ def test_run_scan_passes_gateway_mac_when_given():
     run_scan(
         scan_id="gw-test", protocol="http", port=80, zgrab2_module="http", seed=1,
         candidate_count=2, blocklist_path="/tmp/x", rate_limiter=limiter,
-        current_state=store.current_state, version_index=store.version_index,
+        version_index=store.version_index,
         clock=_fixed_clock(),
         popen=_fake_popen([], calls), gateway_mac="11:22:33:44:55:66",
     )
@@ -182,7 +181,7 @@ def test_run_scan_omits_gateway_mac_when_not_given():
     run_scan(
         scan_id="no-gw-test", protocol="http", port=80, zgrab2_module="http", seed=1,
         candidate_count=2, blocklist_path="/tmp/x", rate_limiter=limiter,
-        current_state=store.current_state, version_index=store.version_index,
+        version_index=store.version_index,
         clock=_fixed_clock(),
         popen=_fake_popen([], calls),
     )
@@ -266,7 +265,6 @@ def test_run_scan_threads_the_user_agent_down_to_the_grab():
         candidate_count=1,
         blocklist_path="/tmp/blocklist.conf",
         rate_limiter=TokenBucket(0.001, burst=1),
-        current_state=InMemoryStore().current_state,
         version_index=InMemoryStore().version_index,
         run_command=run_command,
         target_ip="1.2.3.4",
@@ -283,12 +281,7 @@ def test_run_refresh_scan_threads_the_user_agent_down_to_the_grab():
     # one that revisits the *same* hosts daily, so an unidentified probe there is the
     # one an operator is most likely to notice repeatedly.
     store = InMemoryStore()
-    store.current_state.put(
-        CurrentStateRecord(
-            protocol="http", ip="1.2.3.4", port=80,
-            fingerprint_id="old", last_seen_date="2025-01-01",
-        )
-    )
+    known = ["1.2.3.4"]
     calls = []
 
     def run_command(cmd, input=None):
@@ -302,7 +295,7 @@ def test_run_refresh_scan_threads_the_user_agent_down_to_the_grab():
         zgrab2_module="http",
         blocklist_path="/tmp/blocklist.conf",
         rate_limiter=TokenBucket(0.001, burst=1),
-        current_state=store.current_state, version_index=store.version_index,
+        known_hosts=known, version_index=store.version_index,
         run_command=run_command,
         user_agent="ichnos/1.0 (+https://ichnos.online/responsible-scanning)",
     )
@@ -362,7 +355,7 @@ def test_run_scan_records_observation_and_new_version_for_responsive_host():
         candidate_count=3,
         blocklist_path="/tmp/ichnos-test-blocklist.conf",
         rate_limiter=limiter,
-        current_state=store.current_state, version_index=store.version_index,
+        version_index=store.version_index,
         run_command=run_command,
         clock=_fixed_clock(),
         popen=_fake_popen(["203.0.113.5,synack"], []),
@@ -391,7 +384,7 @@ def test_run_scan_records_closed_for_rst_without_grabbing():
     outcome = run_scan(
         scan_id="rst-test", protocol="http", port=80, zgrab2_module="http", seed=1,
         candidate_count=1, blocklist_path="/tmp/x", rate_limiter=limiter,
-        current_state=store.current_state, version_index=store.version_index,
+        version_index=store.version_index,
         run_command=run_command, clock=_fixed_clock(),
         popen=_fake_popen(["203.0.113.9,rst"], []),
     )
@@ -418,14 +411,14 @@ def test_run_scan_dedupes_unchanged_fingerprint_on_rerun():
     first = run_scan(
         scan_id="run-1", protocol="http", port=80, zgrab2_module="http", seed=42,
         candidate_count=3, blocklist_path="/tmp/x", rate_limiter=limiter,
-        current_state=store.current_state, version_index=store.version_index,
+        version_index=store.version_index,
         run_command=run_command, clock=_fixed_clock(),
         popen=_fake_popen(["203.0.113.5,synack"], []),
     )
     second = run_scan(
         scan_id="run-2", protocol="http", port=80, zgrab2_module="http", seed=42,
         candidate_count=3, blocklist_path="/tmp/x", rate_limiter=limiter,
-        current_state=store.current_state, version_index=store.version_index,
+        version_index=store.version_index,
         run_command=run_command, clock=_fixed_clock(),
         popen=_fake_popen(["203.0.113.5,synack"], []),
     )
@@ -442,7 +435,7 @@ def test_run_scan_no_responsive_hosts():
     outcome = run_scan(
         scan_id="empty-run", protocol="http", port=80, zgrab2_module="http", seed=1,
         candidate_count=5, blocklist_path="/tmp/x", rate_limiter=limiter,
-        current_state=store.current_state, version_index=store.version_index,
+        version_index=store.version_index,
         clock=_fixed_clock(),
         popen=_fake_popen([], []),  # zmap streams nothing - no responses at all
     )
@@ -467,7 +460,7 @@ def test_run_scan_records_grab_failed_when_zgrab2_produces_nothing():
     outcome = run_scan(
         scan_id="grab-fail-test", protocol="http", port=80, zgrab2_module="http", seed=42,
         candidate_count=1, blocklist_path="/tmp/x", rate_limiter=limiter,
-        current_state=store.current_state, version_index=store.version_index,
+        version_index=store.version_index,
         run_command=run_command, clock=_fixed_clock(),
         popen=_fake_popen(["203.0.113.5,synack"], []),
     )
@@ -490,7 +483,7 @@ def test_run_scan_ignores_unrecognized_classifications():
     outcome = run_scan(
         scan_id="weird-line-test", protocol="http", port=80, zgrab2_module="http", seed=1,
         candidate_count=1, blocklist_path="/tmp/x", rate_limiter=limiter,
-        current_state=store.current_state, version_index=store.version_index,
+        version_index=store.version_index,
         run_command=run_command, clock=_fixed_clock(),
         popen=_fake_popen(["not,a,valid,line", "", "203.0.113.5,unknown-classification"], []),
     )
@@ -516,7 +509,7 @@ def test_run_scan_kills_the_zmap_process_if_still_running_after_its_exit_grace_p
     run_scan(
         scan_id="hang-test", protocol="http", port=80, zgrab2_module="http", seed=1,
         candidate_count=2, blocklist_path="/tmp/x", rate_limiter=limiter,
-        current_state=store.current_state, version_index=store.version_index,
+        version_index=store.version_index,
         clock=_fixed_clock(), popen=popen,
     )
 
@@ -545,7 +538,7 @@ def test_run_scan_does_not_kill_a_process_that_exits_promptly_after_streaming():
     run_scan(
         scan_id="normal-exit-test", protocol="http", port=80, zgrab2_module="http", seed=1,
         candidate_count=2, blocklist_path="/tmp/x", rate_limiter=limiter,
-        current_state=store.current_state, version_index=store.version_index,
+        version_index=store.version_index,
         clock=_fixed_clock(), popen=popen,
     )
 
@@ -572,7 +565,7 @@ def test_run_scan_marks_status_failed_when_zmap_exits_non_zero(caplog):
         outcome = run_scan(
             scan_id="zmap-fail-test", protocol="http", port=80, zgrab2_module="http", seed=1,
             candidate_count=1600, blocklist_path="/tmp/x", rate_limiter=limiter,
-            current_state=store.current_state, version_index=store.version_index,
+            version_index=store.version_index,
         clock=_fixed_clock(), popen=popen,
         )
 
@@ -590,7 +583,7 @@ def test_run_scan_status_stays_completed_when_zmap_exits_zero():
     outcome = run_scan(
         scan_id="zmap-ok-test", protocol="http", port=80, zgrab2_module="http", seed=1,
         candidate_count=2, blocklist_path="/tmp/x", rate_limiter=limiter,
-        current_state=store.current_state, version_index=store.version_index,
+        version_index=store.version_index,
         clock=_fixed_clock(), popen=popen,
     )
 
@@ -620,7 +613,7 @@ def test_run_scan_target_ip_skips_discovery_and_grabs_directly():
         scan_id="target-test", protocol="http", port=80, zgrab2_module="http", seed=1,
         candidate_count=99,  # irrelevant in target_ip mode
         blocklist_path="/tmp/nonexistent-blocklist.conf", rate_limiter=limiter,
-        current_state=store.current_state, version_index=store.version_index,
+        version_index=store.version_index,
         run_command=run_command, clock=_fixed_clock(),
         target_ip="1.1.1.1", popen=popen,
     )
@@ -663,7 +656,7 @@ def test_run_scan_normalizes_by_zgrab2_module_not_protocol_label():
     outcome = run_scan(
         scan_id="https-test", protocol="https", port=443, zgrab2_module="tls", seed=1,
         candidate_count=1, blocklist_path="/tmp/x", rate_limiter=limiter,
-        current_state=store.current_state, version_index=store.version_index,
+        version_index=store.version_index,
         run_command=run_command, clock=_fixed_clock(),
         target_ip="1.1.1.1",
     )
@@ -690,7 +683,7 @@ def test_run_scan_target_ip_refuses_a_blocklisted_target(tmp_path):
     outcome = run_scan(
         scan_id="target-blocked-test", protocol="http", port=80, zgrab2_module="http", seed=1,
         candidate_count=1, blocklist_path=blocklist_path, rate_limiter=limiter,
-        current_state=store.current_state, version_index=store.version_index,
+        version_index=store.version_index,
         run_command=run_command, clock=_fixed_clock(),
         target_ip="175.45.176.5",
     )
@@ -717,24 +710,13 @@ def test_run_refresh_scan_regrabs_every_known_host():
         ) + "\n"
 
     store = InMemoryStore()
-    store.current_state.put(
-        CurrentStateRecord(
-            protocol="http", ip="203.0.113.5", port=80, fingerprint_id="old",
-            last_seen_date="2026-07-01",
-        )
-    )
-    store.current_state.put(
-        CurrentStateRecord(
-            protocol="http", ip="203.0.113.9", port=80, fingerprint_id="old2",
-            last_seen_date="2026-07-01",
-        )
-    )
+    known = ["203.0.113.5", "203.0.113.9"]
     limiter = TokenBucket(0.001, burst=1)
 
     outcome = run_refresh_scan(
         scan_id="refresh-test", protocol="http", port=80, zgrab2_module="http",
         blocklist_path="/tmp/nonexistent-blocklist.conf", rate_limiter=limiter,
-        current_state=store.current_state, version_index=store.version_index,
+        known_hosts=known, version_index=store.version_index,
         run_command=run_command, clock=_fixed_clock(),
     )
 
@@ -762,19 +744,13 @@ def test_refresh_publishes_one_version_row_for_a_payload_shared_across_hosts():
         ) + "\n"
 
     store = InMemoryStore()
-    for ip in ("203.0.113.5", "203.0.113.9", "203.0.113.11"):
-        store.current_state.put(
-            CurrentStateRecord(
-                protocol="http", ip=ip, port=80, fingerprint_id="old",
-                last_seen_date="2026-07-01",
-            )
-        )
+    known = ["203.0.113.5", "203.0.113.9", "203.0.113.11"]
     limiter = TokenBucket(0.001, burst=1)
 
     outcome = run_refresh_scan(
         scan_id="refresh-shared", protocol="http", port=80, zgrab2_module="http",
         blocklist_path="/tmp/nonexistent-blocklist.conf", rate_limiter=limiter,
-        current_state=store.current_state, version_index=store.version_index,
+        known_hosts=known, version_index=store.version_index,
         run_command=run_command, clock=_fixed_clock(),
     )
 
@@ -789,12 +765,10 @@ def test_refresh_publishes_one_version_row_for_a_payload_shared_across_hosts():
     # ...but the payload is published once, so the join stays one-to-many.
     assert len(outcome.new_versions) == 1
 
-    # And every host's CurrentState still tracks what it is actually serving now -
-    # publishing the version row only once must not leave two of them on the stale
-    # "old" fingerprint, or the next refresh would re-report them as drifted forever.
-    fp = outcome.observations[0].fingerprint_id
-    for ip in ("203.0.113.5", "203.0.113.9", "203.0.113.11"):
-        assert store.current_state.get("http", ip, 80).fingerprint_id == fp
+    # The per-host record of what each is serving survives that dedupe - it lives in
+    # the Observations asserted above, one per host, all carrying the fingerprint. It
+    # used to live in a CurrentState row per host as well; publishing the version once
+    # must not cost us the per-host facts, whichever of the two is holding them.
 
 
 def test_run_refresh_scan_skips_a_host_that_is_now_blocklisted(tmp_path):
@@ -810,24 +784,13 @@ def test_run_refresh_scan_skips_a_host_that_is_now_blocklisted(tmp_path):
         ) + "\n"
 
     store = InMemoryStore()
-    store.current_state.put(
-        CurrentStateRecord(
-            protocol="http", ip="203.0.113.5", port=80, fingerprint_id="old",
-            last_seen_date="2026-07-01",
-        )
-    )
-    store.current_state.put(
-        CurrentStateRecord(
-            protocol="http", ip="203.0.113.9", port=80, fingerprint_id="old2",
-            last_seen_date="2026-07-01",
-        )
-    )
+    known = ["203.0.113.5", "203.0.113.9"]
     limiter = TokenBucket(0.001, burst=1)
 
     outcome = run_refresh_scan(
         scan_id="refresh-blocked-test", protocol="http", port=80, zgrab2_module="http",
         blocklist_path=blocklist_path, rate_limiter=limiter,
-        current_state=store.current_state, version_index=store.version_index,
+        known_hosts=known, version_index=store.version_index,
         run_command=run_command, clock=_fixed_clock(),
     )
 
@@ -840,6 +803,7 @@ def test_run_refresh_scan_skips_a_host_that_is_now_blocklisted(tmp_path):
 
 def test_run_refresh_scan_no_known_hosts():
     store = InMemoryStore()
+    known = []
     limiter = TokenBucket(0.001, burst=1)
 
     def run_command(cmd, input=None):
@@ -848,7 +812,7 @@ def test_run_refresh_scan_no_known_hosts():
     outcome = run_refresh_scan(
         scan_id="refresh-empty-test", protocol="http", port=80, zgrab2_module="http",
         blocklist_path="/tmp/nonexistent-blocklist.conf", rate_limiter=limiter,
-        current_state=store.current_state, version_index=store.version_index,
+        known_hosts=known, version_index=store.version_index,
         run_command=run_command, clock=_fixed_clock(),
     )
 
@@ -902,7 +866,7 @@ def test_grabs_run_concurrently_rather_than_one_at_a_time():
         scan_id="http-conc", protocol="http", port=80, zgrab2_module="http", seed=1,
         candidate_count=4, blocklist_path="/tmp/x",
         rate_limiter=TokenBucket(0.001, burst=1),
-        current_state=store.current_state, version_index=store.version_index,
+        version_index=store.version_index,
         run_command=run_command, clock=_fixed_clock(),
         popen=_fake_popen(hosts, []), grab_concurrency=4,
     )
@@ -927,7 +891,7 @@ def test_every_grab_is_recorded_and_counted_under_concurrency():
         scan_id="http-many", protocol="http", port=80, zgrab2_module="http", seed=1,
         candidate_count=25, blocklist_path="/tmp/x",
         rate_limiter=TokenBucket(0.001, burst=1),
-        current_state=store.current_state, version_index=store.version_index,
+        version_index=store.version_index,
         run_command=run_command, clock=_fixed_clock(),
         popen=_fake_popen(hosts, []), grab_concurrency=8,
     )
@@ -958,7 +922,7 @@ def test_run_does_not_return_until_outstanding_grabs_have_finished():
         scan_id="http-drain", protocol="http", port=80, zgrab2_module="http", seed=1,
         candidate_count=1, blocklist_path="/tmp/x",
         rate_limiter=TokenBucket(0.001, burst=1),
-        current_state=store.current_state, version_index=store.version_index,
+        version_index=store.version_index,
         run_command=run_command, clock=_fixed_clock(),
         popen=_fake_popen(["203.0.113.7,synack"], []), grab_concurrency=4,
     )
@@ -982,7 +946,7 @@ def test_a_failing_grab_worker_is_logged_not_silently_dropped(caplog):
             scan_id="http-boom", protocol="http", port=80, zgrab2_module="http", seed=1,
             candidate_count=1, blocklist_path="/tmp/x",
             rate_limiter=TokenBucket(0.001, burst=1),
-            current_state=store.current_state, version_index=store.version_index,
+            version_index=store.version_index,
             run_command=run_command, clock=_fixed_clock(),
             popen=_fake_popen(["203.0.113.8,synack"], []), grab_concurrency=2,
         )
@@ -1011,11 +975,7 @@ def test_refresh_grabs_run_concurrently_and_pacing_is_separate_from_concurrency(
         return _grab_stdout()
 
     store = InMemoryStore()
-    for i in range(1, 5):
-        store.current_state.put(CurrentStateRecord(
-            protocol="http", ip=f"203.0.113.{i}", port=80,
-            fingerprint_id="old", last_seen_date="2026-08-01",
-        ))
+    known = [f"203.0.113.{i}" for i in range(1, 5)]
 
     def unblock_once_saturated():
         for _ in range(500):
@@ -1031,7 +991,7 @@ def test_refresh_grabs_run_concurrently_and_pacing_is_separate_from_concurrency(
         scan_id="http-refresh-conc", protocol="http", port=80, zgrab2_module="http",
         blocklist_path="/tmp/x",
         rate_limiter=TokenBucket(0.001, burst=1),  # pacing effectively off
-        current_state=store.current_state, version_index=store.version_index,
+        known_hosts=known, version_index=store.version_index,
         run_command=run_command, clock=_fixed_clock(), concurrency=4,
     )
     watcher.join()
@@ -1059,17 +1019,13 @@ def test_refresh_still_skips_blocklisted_hosts_without_grabbing_them(tmp_path):
     blocklist.write_text("10.0.0.0/8\n")
 
     store = InMemoryStore()
-    for ip in ("203.0.113.5", "10.0.0.9"):
-        store.current_state.put(CurrentStateRecord(
-            protocol="http", ip=ip, port=80,
-            fingerprint_id="old", last_seen_date="2026-08-01",
-        ))
+    known = ["203.0.113.5", "10.0.0.9"]
 
     outcome = run_refresh_scan(
         scan_id="http-refresh-block", protocol="http", port=80, zgrab2_module="http",
         blocklist_path=str(blocklist),
         rate_limiter=TokenBucket(0.001, burst=1),
-        current_state=store.current_state, version_index=store.version_index,
+        known_hosts=known, version_index=store.version_index,
         run_command=run_command, clock=_fixed_clock(), concurrency=4,
     )
 
@@ -1087,17 +1043,13 @@ def test_refresh_stops_at_its_time_budget():
         return _grab_stdout()
 
     store = InMemoryStore()
-    for i in range(1, 200):
-        store.current_state.put(CurrentStateRecord(
-            protocol="http", ip=f"203.0.113.{i}", port=80,
-            fingerprint_id="old", last_seen_date="2026-08-01",
-        ))
+    known = [f"203.0.113.{i}" for i in range(1, 200)]
 
     outcome = run_refresh_scan(
         scan_id="http-budget", protocol="http", port=80, zgrab2_module="http",
         blocklist_path="/tmp/x",
         rate_limiter=TokenBucket(0.02, burst=1),  # 50/s -> ~199 hosts would need ~4s
-        current_state=store.current_state, version_index=store.version_index,
+        known_hosts=known, version_index=store.version_index,
         run_command=run_command, clock=_fixed_clock(), concurrency=4,
         time_budget_seconds=0.5,
     )
@@ -1107,13 +1059,16 @@ def test_refresh_stops_at_its_time_budget():
     assert outcome.metadata.status == "completed"  # stopping early is success, not failure
 
 
-def test_refresh_takes_oldest_checked_first_and_advances_them():
-    """The ordering IS the cursor - there is no stored offset. A host just re-checked
-    must sort to the back so the next run reaches different hosts, which only works
-    because last_seen_date is now written on every successful grab rather than only
-    when the fingerprint changed. With the old behaviour an unchanged host kept its
-    original date forever and a bounded run re-checked the same head of the list every
-    night."""
+def test_refresh_processes_hosts_in_the_order_given_and_records_each_one():
+    """The cursor is the order of `known_hosts`, and that order comes from the derived
+    file, which responsive.write_responsive_file lays down oldest-checked first. This
+    asserts refresh honours it rather than reordering, so a time-bounded run works
+    through the genuinely oldest hosts and stops.
+
+    It also asserts the other half of the cursor: an Observation per host. That is what
+    advances it - refresh writes observations, publish commits them, and the next
+    derivation sees a newer max(observed_at) and sorts those hosts to the back. There
+    is no last_seen column being maintained on the side any more."""
     grabbed = []
 
     def run_command(cmd, input=None):
@@ -1121,39 +1076,15 @@ def test_refresh_takes_oldest_checked_first_and_advances_them():
         return _grab_stdout()
 
     store = InMemoryStore()
-    # Deliberately inserted newest-first, so insertion order cannot be what is followed.
-    for ip, seen in [("203.0.113.3", "2026-08-04"),
-                     ("203.0.113.2", "2026-08-02"),
-                     ("203.0.113.1", "2026-07-30")]:
-        store.current_state.put(CurrentStateRecord(
-            protocol="http", ip=ip, port=80,
-            fingerprint_id="old", last_seen_date=seen,
-        ))
+    known = ["203.0.113.1", "203.0.113.2", "203.0.113.3"]
 
-    kwargs = dict(
-        protocol="http", port=80, zgrab2_module="http",
+    outcome = run_refresh_scan(
+        scan_id="http-order", protocol="http", port=80, zgrab2_module="http",
         blocklist_path="/tmp/x", rate_limiter=TokenBucket(0.001, burst=1),
-        current_state=store.current_state, version_index=store.version_index,
+        known_hosts=known, version_index=store.version_index,
         run_command=run_command, clock=_fixed_clock(), concurrency=1,
     )
-    run_refresh_scan(scan_id="http-order", **kwargs)
 
-    assert grabbed == ["203.0.113.1", "203.0.113.2", "203.0.113.3"]  # oldest first
-    assert {r.last_seen_date for r in store.current_state.list_all("http")} == {"2026-08-01"}
-
-    # Second pass, and the part that actually matters. Every host now already holds the
-    # fingerprint this grab produces, so none of them "changed" - which is the state
-    # nearly every host is in on a real refresh. Push their dates back and re-run: if
-    # the date only advanced on change, these would all stay stale and a bounded run
-    # would re-check this same head of the list forever, never reaching the tail.
-    for record in store.current_state.list_all("http"):
-        store.current_state.put(CurrentStateRecord(
-            protocol="http", ip=record.ip, port=80,
-            fingerprint_id=record.fingerprint_id, last_seen_date="2026-07-01",
-        ))
-    grabbed.clear()
-    outcome = run_refresh_scan(scan_id="http-order-2", **kwargs)
-
+    assert grabbed == known  # order preserved, not sorted or shuffled
+    assert [o.ip for o in outcome.observations] == known
     assert all(o.response_status == "success" for o in outcome.observations)
-    assert not outcome.new_versions, "fingerprints were unchanged, so no version rows"
-    assert {r.last_seen_date for r in store.current_state.list_all("http")} == {"2026-08-01"}

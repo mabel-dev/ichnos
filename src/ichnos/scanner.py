@@ -52,14 +52,12 @@ from typing import Tuple
 from .blocklist import is_blocked
 from .blocklist import read_blocklist_file
 from .fingerprint import fingerprint_id
-from .models import CurrentStateRecord
 from .models import Observation
 from .models import ScanMetadataRecord
 from .models import VersionRecord
 from .logging_setup import get_logger
 from .normalize import normalize
 from .ratelimit import TokenBucket
-from .storage.base import CurrentStateStore
 from .storage.base import VersionIndexStore
 
 logger = get_logger(__name__)
@@ -196,7 +194,6 @@ def _grab_and_record(
     zgrab2_module: str,
     blocklist_path: str,
     run_command: CommandRunner,
-    current_state: CurrentStateStore,
     version_index: VersionIndexStore,
     today: str,
     clock: Callable[[], datetime],
@@ -235,7 +232,7 @@ def _grab_and_record(
     with lock:
         _record_grab_result(
             module_result=module_result, scan_id=scan_id, protocol=protocol, ip=ip,
-            port=port, zgrab2_module=zgrab2_module, current_state=current_state,
+            port=port, zgrab2_module=zgrab2_module,
             version_index=version_index, today=today, clock=clock, outcome=outcome,
             metadata=metadata,
         )
@@ -263,7 +260,6 @@ def _record_grab_result(
     ip: str,
     port: int,
     zgrab2_module: str,
-    current_state: CurrentStateStore,
     version_index: VersionIndexStore,
     today: str,
     clock: Callable[[], datetime],
@@ -294,13 +290,21 @@ def _record_grab_result(
     payload = normalize(zgrab2_module, module_result)
     fp_id = fingerprint_id(payload)
 
-    current = current_state.get(protocol, ip, port)
-    is_new_for_host = current is None or current.fingerprint_id != fp_id
-    logger.info(
-        "scan %s: %s fingerprint=%s (%s)",
-        scan_id, ip, fp_id, "new" if is_new_for_host else "unchanged",
-    )
+    # No per-host state lookup. This used to read CurrentState to decide whether the
+    # host had changed, and only then consult version_index - but that gate was never
+    # load-bearing for what gets published. version_index.claim is the real dedupe, and
+    # it answers the question the Version datasets actually ask ("have we ever
+    # published this payload?") rather than the per-host one ("did this host change?").
+    # Conflating those two was a historical bug; keeping a table to pre-filter one with
+    # the other was the residue of it.
+    #
+    # Dropping it costs a conditional put per already-published fingerprint where there
+    # used to be a read - on refresh, where most hosts are unchanged, that is ~10/s.
+    # Whether a host changed is still recorded, in the Observation below: every one
+    # carries its fingerprint, so drift is a query over observations rather than
+    # something the scanner has to remember between runs.
     observed_at = clock()
+    logger.info("scan %s: %s fingerprint=%s", scan_id, ip, fp_id)
     outcome.observations.append(
         Observation(
             scan_id=scan_id,
@@ -313,38 +317,10 @@ def _record_grab_result(
         )
     )
 
-    # Written on every successful grab, not only when the fingerprint changed. The
-    # date is what `refresh` orders by (oldest-checked first, see run_refresh_scan),
-    # and that ordering is the cursor: a host just re-checked has to sort to the back
-    # so the next run moves on to different hosts. Updating only on change left every
-    # unchanged host - which is nearly all of them - stuck at its original date, so a
-    # time-bounded refresh would have re-checked the same first N hosts every night
-    # and never reached the rest.
-    #
-    # The cost is one extra upsert per unchanged host, which is a write we used to
-    # skip. At refresh's pacing that is ~10/s, against DynamoDB round trips measured
-    # at ~3.4ms; on discovery it is close to free, since known-responsive hosts are
-    # excluded from the candidate pool and so almost every hit there is new anyway.
-    current_state.put(
-        CurrentStateRecord(
-            protocol=protocol,
-            ip=ip,
-            port=port,
-            fingerprint_id=fp_id,
-            last_seen_date=today,
-        )
-    )
-
-    if not is_new_for_host:
-        return
-
-    # Two separate questions, deliberately asked separately - conflating them was a real
-    # production bug. "Did this host change?" (above) is what CurrentState answers and
-    # what the Observation records. "Is this payload one we have never published?" is
-    # what the Version datasets need, and only version_index can answer it: the
+    # The question the Version datasets need answered, asked once, globally: the
     # fingerprint hashes the payload alone, so thousands of hosts fronted by the same
-    # CDN share one fingerprint, and every one of them used to append its own duplicate
-    # copy of the identical row. See VersionIndexStore.claim.
+    # CDN share one, and every one of them used to append a duplicate copy of the
+    # identical row. See VersionIndexStore.claim.
     if not version_index.claim(fp_id):
         logger.info("scan %s: fingerprint=%s already published, no version row", scan_id, fp_id)
         return
@@ -381,7 +357,6 @@ def _stream_discover_and_grab(
     seed: int,
     max_targets: int,
     blocklist_path: str,
-    current_state: CurrentStateStore,
     version_index: VersionIndexStore,
     today: str,
     clock: Callable[[], datetime],
@@ -461,7 +436,7 @@ def _stream_discover_and_grab(
             _grab_and_record(
                 scan_id=scan_id, protocol=protocol, ip=target_ip, port=port,
                 zgrab2_module=zgrab2_module, blocklist_path=blocklist_path,
-                run_command=grab_run_command, current_state=current_state,
+                run_command=grab_run_command,
                 version_index=version_index, today=today,
                 clock=clock, outcome=outcome, metadata=metadata, user_agent=user_agent,
                 record_lock=record_lock,
@@ -560,7 +535,6 @@ def run_scan(
     candidate_count: int,
     blocklist_path: str,
     rate_limiter: TokenBucket,
-    current_state: CurrentStateStore,
     version_index: VersionIndexStore,
     run_command: CommandRunner = _default_run_command,
     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
@@ -581,9 +555,10 @@ def run_scan(
     for) and still enforces the blocklist explicitly, since it bypasses ZMap's own
     discovery-time exclusion.
 
-    Idempotent per design doc §7: `CurrentState` writes are upserts keyed by
-    protocol#ip#port, so re-running the same `(scan_id, seed)` after a crash converges
-    to the same end state rather than duplicating history.
+    Idempotent per design doc §7: re-running the same `(scan_id, seed)` after a crash
+    converges to the same end state rather than duplicating history - version rows are
+    gated by `version_index.claim`, which is a conditional write, and observations are
+    append-only facts about a moment rather than mutable state.
     """
     started_at = clock()
     metadata = ScanMetadataRecord(
@@ -607,7 +582,7 @@ def run_scan(
                 scan_id=scan_id, protocol=protocol, ip=target_ip, port=port,
                 zgrab2_module=zgrab2_module, blocklist_path=blocklist_path,
                 run_command=run_command,
-                current_state=current_state, version_index=version_index, today=today, clock=clock,
+                version_index=version_index, today=today, clock=clock,
                 outcome=outcome, metadata=metadata, user_agent=user_agent,
             )
         metadata.ended_at = clock()
@@ -617,7 +592,7 @@ def run_scan(
     _stream_discover_and_grab(
         scan_id=scan_id, protocol=protocol, port=port, zgrab2_module=zgrab2_module,
         seed=seed, max_targets=candidate_count, blocklist_path=blocklist_path,
-        current_state=current_state, version_index=version_index,
+        version_index=version_index,
         today=today, clock=clock, outcome=outcome,
         metadata=metadata, gateway_mac=gateway_mac, cooldown_seconds=cooldown_seconds,
         rate_pps=rate_pps, grab_concurrency=grab_concurrency,
@@ -641,7 +616,7 @@ def run_refresh_scan(
     zgrab2_module: str,
     blocklist_path: str,
     rate_limiter: TokenBucket,
-    current_state: CurrentStateStore,
+    known_hosts: List[str],
     version_index: VersionIndexStore,
     run_command: CommandRunner = _default_run_command,
     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
@@ -655,8 +630,8 @@ def run_refresh_scan(
     No ZMap discovery involved - the whole point is that these addresses are already
     known, there's no needle-in-haystack search left to do. Same shape as
     `run_scan()`'s `target_ip` path (skip discovery, go straight to a ZGrab2 grab),
-    just looped over every row `current_state.list_all(protocol)` returns instead of
-    one ad-hoc address. Distinct from discovery (design doc's random-sampling `scan`),
+    just looped over `known_hosts` - the addresses responsive-refresh derived from
+    published Observations, oldest-checked first - instead of one ad-hoc address. Distinct from discovery (design doc's random-sampling `scan`),
     which this project runs on its own separate, more relaxed cadence since it's the
     one actually searching unknown space.
     """
@@ -670,7 +645,6 @@ def run_refresh_scan(
     # today's date (see _record_grab_result) so they sort to the back, and the next run
     # naturally continues where this one stopped. Nothing to persist, nothing to lose
     # on an instance rebuild, and no drift if a run dies partway.
-    known_hosts = sorted(current_state.list_all(protocol), key=lambda r: r.last_seen_date)
     blocklist_cidrs = read_blocklist_file(blocklist_path)
     deadline = None if not time_budget_seconds else monotonic() + time_budget_seconds
     logger.info(
@@ -692,7 +666,7 @@ def run_refresh_scan(
             _grab_and_record(
                 scan_id=scan_id, protocol=protocol, ip=ip, port=port,
                 zgrab2_module=zgrab2_module, blocklist_path=blocklist_path,
-                run_command=run_command, current_state=current_state,
+                run_command=run_command,
                 version_index=version_index, today=today,
                 clock=clock, outcome=outcome, metadata=metadata, user_agent=user_agent,
                 record_lock=record_lock,
@@ -703,7 +677,7 @@ def run_refresh_scan(
     with ThreadPoolExecutor(
         max_workers=concurrency, thread_name_prefix="ichnos-refresh"
     ) as pool:
-        for record in known_hosts:
+        for ip in known_hosts:
             if deadline is not None and monotonic() >= deadline:
                 logger.info(
                     "refresh %s: time budget reached, stopping after %d of %d hosts - "
@@ -715,11 +689,11 @@ def run_refresh_scan(
             # Re-checked per host, not just once up front - a host could have been opted
             # out or jurisdiction-excluded after it was originally recorded (same reason
             # run_scan()'s target_ip path re-checks rather than trusting past inclusion).
-            if is_blocked(record.ip, blocklist_cidrs):
-                logger.warning("refresh %s: %s is now blocklisted, skipping", scan_id, record.ip)
+            if is_blocked(ip, blocklist_cidrs):
+                logger.warning("refresh %s: %s is now blocklisted, skipping", scan_id, ip)
                 continue
             rate_limiter.wait()
-            pool.submit(_refresh_worker, record.ip)
+            pool.submit(_refresh_worker, ip)
 
     metadata.ended_at = clock()
     metadata.status = "completed"

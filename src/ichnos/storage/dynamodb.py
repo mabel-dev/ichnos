@@ -3,7 +3,6 @@
 Table layout matches the design doc exactly:
     Exclusions    PK ip_or_cidr
     ScanSchedule  PK protocol
-    CurrentState  PK protocol#ip#port (see CurrentStateRecord.key)
     VersionIndex  PK fingerprint_id
 
 Requires the `aws` extra (`pip install ichnos[aws]`) - boto3 is not a hard dependency
@@ -18,11 +17,9 @@ from typing import Dict
 from typing import List
 from typing import Optional
 
-from ..models import CurrentStateRecord
 from ..models import Exclusion
 from ..models import ExclusionSource
 from ..models import ScheduleEntry
-from .base import CurrentStateStore
 from .base import ExclusionStore
 from .base import ScheduleStore
 from .base import Store
@@ -122,67 +119,6 @@ class DynamoDBScheduleStore(ScheduleStore):
         )
 
 
-class DynamoDBCurrentStateStore(CurrentStateStore):
-    def __init__(self, table_name: str, *, resource: Any = None):
-        _require_boto3()
-        self._table = (resource or boto3.resource("dynamodb")).Table(table_name)
-
-    def get(self, protocol: str, ip: str, port: int) -> Optional[CurrentStateRecord]:
-        key = f"{protocol}#{ip}#{port}"
-        response = self._table.get_item(Key={"key": key})
-        item = response.get("Item")
-        if not item:
-            return None
-        return CurrentStateRecord(
-            protocol=protocol,
-            ip=ip,
-            port=port,
-            fingerprint_id=item["fingerprint_id"],
-            last_seen_date=item["last_seen_date"],
-        )
-
-    def put(self, record: CurrentStateRecord) -> None:
-        self._table.put_item(
-            Item={
-                "key": record.key,
-                "fingerprint_id": record.fingerprint_id,
-                "last_seen_date": record.last_seen_date,
-            }
-        )
-
-    def list_all(self, protocol: str) -> List[CurrentStateRecord]:
-        # Table is keyed by a single partition key ("protocol#ip#port"), no sort key
-        # or GSI, so a prefix match needs a Scan + FilterExpression rather than a
-        # Query - same pagination pattern DynamoDBExclusionStore.list_all() already
-        # uses. Fine at current scale (known-host counts in the tens, not thousands).
-        rows: List[CurrentStateRecord] = []
-        scan_kwargs: Dict[str, Any] = {"FilterExpression": Attr("key").begins_with(f"{protocol}#")}
-        while True:
-            response = self._table.scan(**scan_kwargs)
-            for item in response.get("Items", []):
-                ip, port = item["key"].split("#")[1:3]
-                rows.append(
-                    CurrentStateRecord(
-                        protocol=protocol,
-                        ip=ip,
-                        port=int(port),
-                        fingerprint_id=item["fingerprint_id"],
-                        last_seen_date=item["last_seen_date"],
-                    )
-                )
-            last_key = response.get("LastEvaluatedKey")
-            if not last_key:
-                break
-            scan_kwargs["ExclusiveStartKey"] = last_key
-        return rows
-
-    def count(self) -> int:
-        # DynamoDB's DescribeTable ItemCount is only updated ~every 6 hours - fine for a
-        # coarse CloudWatch metric of storage growth, not for correctness-critical reads.
-        response = self._table.meta.client.describe_table(TableName=self._table.table_name)
-        return int(response["Table"]["ItemCount"])
-
-
 class DynamoDBVersionIndexStore(VersionIndexStore):
     def __init__(self, table_name: str, *, resource: Any = None):
         _require_boto3()
@@ -212,7 +148,6 @@ class DynamoDBStore(Store):
         *,
         exclusions_table: str = "Exclusions",
         schedule_table: str = "ScanSchedule",
-        current_state_table: str = "CurrentState",
         version_index_table: str = "VersionIndex",
         resource: Any = None,
     ):
@@ -220,5 +155,4 @@ class DynamoDBStore(Store):
         resource = resource or boto3.resource("dynamodb")
         self.exclusions = DynamoDBExclusionStore(exclusions_table, resource=resource)
         self.schedule = DynamoDBScheduleStore(schedule_table, resource=resource)
-        self.current_state = DynamoDBCurrentStateStore(current_state_table, resource=resource)
         self.version_index = DynamoDBVersionIndexStore(version_index_table, resource=resource)

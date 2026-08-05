@@ -66,6 +66,7 @@ from .publish import exclusion_rows
 from .publish import publish_hour
 from .publish import read_pending_datasets
 from .responsive import read_responsive_file
+from .responsive import read_responsive_hosts
 from .responsive import refresh_protocol
 from .ratelimit import TokenBucket
 from .s3sync import download_file as s3_download_file
@@ -89,7 +90,6 @@ def _build_store(backend: str, settings: Settings):
         return DynamoDBStore(
             exclusions_table=settings.exclusions_table,
             schedule_table=settings.schedule_table,
-            current_state_table=settings.current_state_table,
             version_index_table=settings.version_index_table,
         )
     raise ValueError(f"unknown store backend: {backend!r}")
@@ -232,7 +232,6 @@ def cmd_scan(args: argparse.Namespace) -> int:
         candidate_count=args.candidates,
         blocklist_path=settings.blocklist_path,
         rate_limiter=rate_limiter,
-        current_state=store.current_state,
         version_index=store.version_index,
         target_ip=args.target,
         gateway_mac=settings.zmap_gateway_mac or None,
@@ -281,7 +280,9 @@ def cmd_refresh(args: argparse.Namespace) -> int:
         zgrab2_module=entry.zgrab2_module,
         blocklist_path=settings.blocklist_path,
         rate_limiter=rate_limiter,
-        current_state=store.current_state,
+        known_hosts=[ip for ip, _ in read_responsive_hosts(
+            settings.known_responsive_path.format(protocol=args.protocol)
+        )],
         version_index=store.version_index,
         user_agent=settings.scan_user_agent,
         concurrency=settings.grab_concurrency,
@@ -389,12 +390,14 @@ def cmd_jurisdiction_refresh(args: argparse.Namespace) -> int:
 def cmd_responsive_refresh(args: argparse.Namespace) -> int:
     """Rebuild the known-responsive host list from published Observations.
 
-    Nightly, ahead of `refresh`, so both that job's target list and discovery's
-    exclusion are current for the day. Nothing consumes the output yet - this runs
-    alongside CurrentState and logs how the two compare, which is the evidence that the
-    derived list is equivalent before anything is switched over to it (and before the
-    table is dropped). The comparison, and the store read backing it, come out with
-    CurrentState itself.
+    Nightly, ahead of `refresh`, and at boot - the file lives on the instance's root
+    volume, which does not survive a replacement, and both consumers read it from
+    there. Discovery uses it as the known-responsive exclusion; refresh uses it as its
+    target list, oldest-checked first.
+
+    It ran in parallel with CurrentState first, logging how the two compared: across
+    all three protocols the derived list contained nothing the table did not, which is
+    what justified dropping the table.
     """
     settings = Settings.from_env()
     if not settings.opteryx_client_id or not settings.opteryx_client_secret:
@@ -438,20 +441,6 @@ def cmd_responsive_refresh(args: argparse.Namespace) -> int:
         if not ok:
             failures += 1
             continue
-
-        # Parallel-run comparison, temporary. CurrentState is unbounded where the
-        # derived list is a rolling window, so "only in CurrentState" is expected to be
-        # non-zero and to grow - it is hosts that last answered before the window.
-        # "Only in derived" is the one that should stay near zero; anything else there
-        # means the derivation is finding hosts the table never recorded.
-        derived = set(read_responsive_file(path))
-        stored = {r.ip for r in store.current_state.list_all(protocol)}
-        logger.info(
-            "responsive-refresh %s: derived=%d currentstate=%d "
-            "only-in-derived=%d only-in-currentstate=%d",
-            protocol, len(derived), len(stored),
-            len(derived - stored), len(stored - derived),
-        )
 
     return 1 if failures else 0
 

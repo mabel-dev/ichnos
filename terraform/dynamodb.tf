@@ -42,24 +42,6 @@ resource "aws_dynamodb_table" "scan_schedule" {
   }
 }
 
-resource "aws_dynamodb_table" "current_state" {
-  name         = "CurrentState"
-  billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "key"
-
-  attribute {
-    name = "key"
-    type = "S"
-  }
-
-  server_side_encryption {
-    enabled = true
-  }
-
-  # No PITR - rebuildable by re-deriving from recently-published Observations/Versions
-  # in Opteryx if ever lost (design doc §12), and at MVP volume this table stays small
-  # enough that the cost of PITR isn't worth it either way.
-}
 
 # Which fingerprints have ever had a Versions row published. Deliberately NOT folded
 # into CurrentState: that table answers "what is this host serving now?" and is keyed by

@@ -6,8 +6,9 @@ import pytest
 from ichnos.odata import ODataError
 from ichnos.odata import distinct_values
 from ichnos.odata import fetch_access_token
-from ichnos.responsive import fetch_responsive_ips
+from ichnos.responsive import fetch_responsive_hosts
 from ichnos.responsive import read_responsive_file
+from ichnos.responsive import read_responsive_hosts
 from ichnos.responsive import refresh_protocol
 from ichnos.responsive import window_start
 from ichnos.responsive import write_responsive_file
@@ -102,13 +103,14 @@ def test_fetch_responsive_ips_asks_only_for_successful_grabs():
     # "grab-failed". Neither is a host refresh can re-grab, and a closed port is exactly
     # what discovery should keep sampling, so neither belongs in this list.
     calls = []
-    fetch_responsive_ips(
+    fetch_responsive_hosts(
         "https", workspace="ichnos", collection="landing", token="t",
         now=datetime(2026, 8, 4, tzinfo=timezone.utc),
         get=_fake_get([{"value": []}], calls),
     )
     url = calls[0]
     assert "response_status%20eq%20%27success%27" in url
+    assert "aggregate(observed_at%20with%20max%20as%20last_seen)" in url
     assert "protocol%20eq%20%27https%27" in url
     assert "observed_at%20ge%202026-07-20T00%3A00%3A00Z" in url
     assert url.startswith("https://odata.opteryx.app/api/v4/ichnos/landing/observations?")
@@ -119,7 +121,7 @@ def test_refresh_keeps_the_previous_list_when_the_read_fails(tmp_path):
     # empty list is not a mild version of a stale one - it means discovery spends the
     # next day re-finding every host it already knew.
     path = str(tmp_path / "known-responsive-http.conf")
-    write_responsive_file(path, ["203.0.113.1", "203.0.113.2"])
+    write_responsive_file(path, [("203.0.113.1", "2026-07-30"), ("203.0.113.2", "2026-08-01")])
 
     def failing_get(url, headers=None, timeout=None):
         return FakeResponse({"error": {"message": "upstream down"}}, status_code=503)
@@ -136,7 +138,7 @@ def test_a_genuinely_empty_result_is_allowed_to_write_an_empty_list(tmp_path):
     # with an empty `value`, so an empty result is real data and must be written -
     # otherwise a list could never shrink to nothing.
     path = str(tmp_path / "known-responsive-ssh.conf")
-    write_responsive_file(path, ["203.0.113.9"])
+    write_responsive_file(path, [("203.0.113.9", "2026-08-01")])
 
     ok = refresh_protocol(
         "ssh", path, workspace="ichnos", collection="landing", token="t",
@@ -156,6 +158,45 @@ def test_write_is_atomic_leaving_no_partial_file(tmp_path):
     # Same hazard write_blocklist_file guards: this is read at the start of every scan,
     # and a reader catching a half-written file would silently under-exclude.
     path = str(tmp_path / "known-responsive-http.conf")
-    write_responsive_file(path, ["198.51.100.1"] * 3)
+    write_responsive_file(path, [("198.51.100.1", "2026-08-01")] * 3)
     assert not (tmp_path / "known-responsive-http.conf.tmp").exists()
     assert len(read_responsive_file(path)) == 3
+
+
+def test_responsive_file_roundtrips_pairs_and_tolerates_address_only_lines(tmp_path):
+    """The file carries `<ip> <last_seen>` because refresh orders by last-checked and
+    that ordering replaced the CurrentState column that used to hold it. An older
+    address-only file still has to parse - a rebuilt instance can find one on disk -
+    and those lines sort first, which reads as "we do not know when this was last
+    checked, so check it soonest"."""
+    path = str(tmp_path / "known-responsive-http.conf")
+    write_responsive_file(path, [("203.0.113.1", "2026-07-30T00:00:00Z"),
+                                 ("203.0.113.2", "2026-08-01T00:00:00Z")])
+
+    assert read_responsive_hosts(path) == [
+        ("203.0.113.1", "2026-07-30T00:00:00Z"),
+        ("203.0.113.2", "2026-08-01T00:00:00Z"),
+    ]
+    assert read_responsive_file(path) == ["203.0.113.1", "203.0.113.2"]
+
+    with open(path, "w") as f:
+        f.write("203.0.113.9\n203.0.113.8 2026-08-02T00:00:00Z\n")
+    hosts = read_responsive_hosts(path)
+    assert hosts == [("203.0.113.9", ""), ("203.0.113.8", "2026-08-02T00:00:00Z")]
+    assert sorted(hosts, key=lambda h: h[1])[0][0] == "203.0.113.9"  # unknown -> first
+
+
+def test_fetch_returns_hosts_oldest_seen_first(tmp_path):
+    """refresh streams the file and stops when its budget runs out, so the ordering has
+    to be applied here rather than there - the feed will not $orderby an aggregate
+    alias, so it is sorted client-side after the groupby."""
+    pages = [{"value": [
+        {"ip": "203.0.113.3", "last_seen": "2026-08-04T00:00:00Z"},
+        {"ip": "203.0.113.1", "last_seen": "2026-07-30T00:00:00Z"},
+        {"ip": "203.0.113.2", "last_seen": "2026-08-02T00:00:00Z"},
+    ]}]
+    hosts = fetch_responsive_hosts(
+        "http", workspace="ichnos", collection="landing", token="t",
+        now=datetime(2026, 8, 5, tzinfo=timezone.utc), get=_fake_get(pages),
+    )
+    assert [ip for ip, _ in hosts] == ["203.0.113.1", "203.0.113.2", "203.0.113.3"]
