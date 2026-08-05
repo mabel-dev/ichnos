@@ -60,8 +60,29 @@ class Settings:
     jurisdiction_s3_bucket: str = ""
     jurisdiction_s3_key: str = "jurisdiction/jurisdiction-blocklist.conf"
 
-    # Throttle (design doc §4) - global budget shared across all enabled protocols
+    # Throttle (design doc §4) - the original MVP budget. Still used by the ad-hoc
+    # `scan --target` path; no longer the discovery throttle (that is ZMap's native
+    # --rate, see zmap_rate_pps) and no longer refresh's (see refresh_rate_per_second).
     rate_interval_seconds: float = 5.0
+
+    # How many known hosts a second `refresh` may re-grab.
+    #
+    # Refresh used to inherit rate_interval_seconds, so it re-checked one host every 5
+    # seconds. That was coherent when it was written - discovery ran at 1pps and the
+    # known-host set was tiny - but discovery has since gone to 32pps and refresh's
+    # workload is discovery's *output*, so the two diverged badly: 5,581 known http
+    # hosts took 7.8 hours, 6,167 https hosts 8.6 hours, and at current discovery rates
+    # tomorrow's sets would need 60+ hours. A refresh that cannot finish inside a day
+    # is skipped by its flock guard and the backlog compounds, silently - nothing logs
+    # a refresh that never ran.
+    #
+    # 10/s finishes 50,000 hosts in under an hour and a half. It is a bigger number
+    # than it looks next to the old one but a small one next to discovery: the scanner
+    # is already sending 32 SYNs a second per protocol, and each of these is a single
+    # handshake to a host that has answered before. It is a knob precisely because the
+    # right value depends on how large the known set gets - and Stage 3's 15-day window
+    # is what stops that growing without bound (see responsive.py).
+    refresh_rate_per_second: float = 10.0
 
     # ZMap's own runtime gateway-MAC ARP resolution turned out to be unreliable at the
     # invocation volume this project's earlier per-candidate design made (see
@@ -248,6 +269,9 @@ class Settings:
             jurisdiction_s3_bucket=_env("JURISDICTION_S3_BUCKET", cls.jurisdiction_s3_bucket),
             jurisdiction_s3_key=_env("JURISDICTION_S3_KEY", cls.jurisdiction_s3_key),
             rate_interval_seconds=_env_float("RATE_INTERVAL_SECONDS", cls.rate_interval_seconds),
+            refresh_rate_per_second=_env_float(
+                "REFRESH_RATE_PER_SECOND", cls.refresh_rate_per_second
+            ),
             zmap_gateway_mac=_env("ZMAP_GATEWAY_MAC", cls.zmap_gateway_mac),
             zmap_cooldown_seconds=_env_int("ZMAP_COOLDOWN_SECONDS", cls.zmap_cooldown_seconds),
             zmap_rate_pps=_env_int("ZMAP_RATE_PPS", cls.zmap_rate_pps),

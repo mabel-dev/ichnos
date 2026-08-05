@@ -989,3 +989,90 @@ def test_a_failing_grab_worker_is_logged_not_silently_dropped(caplog):
 
     assert outcome.metadata.status == "completed"  # one bad host doesn't fail the run
     assert any("grab worker failed for 203.0.113.8" in r.message for r in caplog.records)
+
+
+def test_refresh_grabs_run_concurrently_and_pacing_is_separate_from_concurrency():
+    """Refresh used to be serial *and* paced at one host per 5s from the same knob, so
+    a slow host cost the run its timeout plus the interval. The bucket should pace
+    submissions while the pool bounds in-flight work - they are different limits."""
+    import threading as _t
+
+    in_flight, peak, lock = 0, [0], _t.Lock()
+    release = _t.Event()
+
+    def run_command(cmd, input=None):
+        nonlocal in_flight
+        with lock:
+            in_flight += 1
+            peak[0] = max(peak[0], in_flight)
+        release.wait(timeout=5)
+        with lock:
+            in_flight -= 1
+        return _grab_stdout()
+
+    store = InMemoryStore()
+    for i in range(1, 5):
+        store.current_state.put(CurrentStateRecord(
+            protocol="http", ip=f"203.0.113.{i}", port=80,
+            fingerprint_id="old", last_seen_date="2026-08-01",
+        ))
+
+    def unblock_once_saturated():
+        for _ in range(500):
+            with lock:
+                if peak[0] >= 4:
+                    break
+            _t.Event().wait(0.01)
+        release.set()
+
+    watcher = _t.Thread(target=unblock_once_saturated)
+    watcher.start()
+    outcome = run_refresh_scan(
+        scan_id="http-refresh-conc", protocol="http", port=80, zgrab2_module="http",
+        blocklist_path="/tmp/x",
+        rate_limiter=TokenBucket(0.001, burst=1),  # pacing effectively off
+        current_state=store.current_state, version_index=store.version_index,
+        run_command=run_command, clock=_fixed_clock(), concurrency=4,
+    )
+    watcher.join()
+
+    assert peak[0] > 1, f"refresh grabs never overlapped (peak {peak[0]}) - still serial"
+    assert outcome.metadata.targets_attempted == 4
+    assert len(outcome.observations) == 4
+
+
+def test_refresh_still_skips_blocklisted_hosts_without_grabbing_them(tmp_path):
+    """The per-host blocklist re-check has to survive the move onto the pool - a host
+    opted out since it was recorded must not be grabbed, and must still be counted as
+    attempted so the metadata reflects what was considered.
+
+    The blocklist is read from the *file* `_rebuild_blocklist` writes, not from
+    DEFAULT_BOGONS directly, so the file has to exist for anything to be blocked - a
+    missing one blocks nothing at all."""
+    grabbed = []
+
+    def run_command(cmd, input=None):
+        grabbed.append(input.strip())
+        return _grab_stdout()
+
+    blocklist = tmp_path / "blocklist.conf"
+    blocklist.write_text("10.0.0.0/8\n")
+
+    store = InMemoryStore()
+    for ip in ("203.0.113.5", "10.0.0.9"):
+        store.current_state.put(CurrentStateRecord(
+            protocol="http", ip=ip, port=80,
+            fingerprint_id="old", last_seen_date="2026-08-01",
+        ))
+
+    outcome = run_refresh_scan(
+        scan_id="http-refresh-block", protocol="http", port=80, zgrab2_module="http",
+        blocklist_path=str(blocklist),
+        rate_limiter=TokenBucket(0.001, burst=1),
+        current_state=store.current_state, version_index=store.version_index,
+        run_command=run_command, clock=_fixed_clock(), concurrency=4,
+    )
+
+    assert "10.0.0.9" not in grabbed
+    assert "203.0.113.5" in grabbed
+    assert outcome.metadata.targets_attempted == 2  # both considered, one skipped

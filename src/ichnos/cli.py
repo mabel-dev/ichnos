@@ -234,9 +234,16 @@ def cmd_refresh(args: argparse.Namespace) -> int:
 
     _rebuild_blocklist(settings, store)
 
-    rate_limiter = TokenBucket(settings.rate_interval_seconds, burst=1)
+    # Paced by refresh_rate_per_second, not the MVP rate_interval_seconds bucket -
+    # refresh's workload is discovery's output, and discovery has outrun a 5-second
+    # interval by two orders of magnitude. See config.py's refresh_rate_per_second.
+    rate_limiter = TokenBucket(1.0 / settings.refresh_rate_per_second, burst=1)
     scan_id = f"{args.protocol}-refresh-{uuid.uuid4().hex[:12]}"
-    logger.info("refresh %s starting: protocol=%s port=%s", scan_id, args.protocol, entry.port)
+    logger.info(
+        "refresh %s starting: protocol=%s port=%s rate=%g/s concurrency=%d",
+        scan_id, args.protocol, entry.port,
+        settings.refresh_rate_per_second, settings.grab_concurrency,
+    )
 
     outcome = run_refresh_scan(
         scan_id=scan_id,
@@ -248,6 +255,7 @@ def cmd_refresh(args: argparse.Namespace) -> int:
         current_state=store.current_state,
         version_index=store.version_index,
         user_agent=settings.scan_user_agent,
+        concurrency=settings.grab_concurrency,
     )
     _write_pending_outcome(settings, outcome)
 

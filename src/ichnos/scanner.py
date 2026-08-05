@@ -633,6 +633,7 @@ def run_refresh_scan(
     run_command: CommandRunner = _default_run_command,
     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     user_agent: Optional[str] = None,
+    concurrency: int = DEFAULT_GRAB_CONCURRENCY,
 ) -> ScanRunOutcome:
     """Re-test every currently-known-responsive host for `protocol`, to detect drift
     (a server upgrade, a cert rotation, a new fingerprint) since it was last seen.
@@ -654,22 +655,40 @@ def run_refresh_scan(
     blocklist_cidrs = read_blocklist_file(blocklist_path)
     logger.info("refresh %s: %d known %s hosts to re-check", scan_id, len(known_hosts), protocol)
 
-    for record in known_hosts:
-        metadata.targets_attempted += 1
-        # Re-checked per host, not just once up front - a host could have been opted
-        # out or jurisdiction-excluded after it was originally recorded (same reason
-        # run_scan()'s target_ip path re-checks rather than trusting past inclusion).
-        if is_blocked(record.ip, blocklist_cidrs):
-            logger.warning("refresh %s: %s is now blocklisted, skipping", scan_id, record.ip)
-            continue
-        rate_limiter.wait()
-        _grab_and_record(
-            scan_id=scan_id, protocol=protocol, ip=record.ip, port=port,
-            zgrab2_module=zgrab2_module, blocklist_path=blocklist_path,
-            run_command=run_command, current_state=current_state,
-            version_index=version_index, today=today,
-            clock=clock, outcome=outcome, metadata=metadata, user_agent=user_agent,
-        )
+    # Same grab-concurrent / record-serialized split discovery uses, and for the same
+    # reason - see `_grab_and_record`. The rate limiter stays in this loop rather than
+    # inside the workers, so it paces *submissions*: the bucket decides how fast hosts
+    # are handed out, the pool bounds how many are in flight, and one 30s timeout no
+    # longer stalls the queue behind it. Those two knobs were previously the same knob,
+    # which is why a single slow host cost the whole run five seconds plus its timeout.
+    record_lock = threading.Lock()
+
+    def _refresh_worker(ip: str) -> None:
+        try:
+            _grab_and_record(
+                scan_id=scan_id, protocol=protocol, ip=ip, port=port,
+                zgrab2_module=zgrab2_module, blocklist_path=blocklist_path,
+                run_command=run_command, current_state=current_state,
+                version_index=version_index, today=today,
+                clock=clock, outcome=outcome, metadata=metadata, user_agent=user_agent,
+                record_lock=record_lock,
+            )
+        except Exception:
+            logger.exception("refresh %s: grab worker failed for %s", scan_id, ip)
+
+    with ThreadPoolExecutor(
+        max_workers=concurrency, thread_name_prefix="ichnos-refresh"
+    ) as pool:
+        for record in known_hosts:
+            metadata.targets_attempted += 1
+            # Re-checked per host, not just once up front - a host could have been opted
+            # out or jurisdiction-excluded after it was originally recorded (same reason
+            # run_scan()'s target_ip path re-checks rather than trusting past inclusion).
+            if is_blocked(record.ip, blocklist_cidrs):
+                logger.warning("refresh %s: %s is now blocklisted, skipping", scan_id, record.ip)
+                continue
+            rate_limiter.wait()
+            pool.submit(_refresh_worker, record.ip)
 
     metadata.ended_at = clock()
     metadata.status = "completed"
