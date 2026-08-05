@@ -99,11 +99,16 @@ variable "scan_protocol_budgets" {
     durations of 3134-3163s against a predicted 3128s, measured ~40% of 2 vCPU during
     active runs with peaks of 49.5%.
 
-    That peak is the limit, not the average. 650000/hour scales it to ~65% average and
-    ~80% peak, which leaves room for a bad run. 900000 was drafted first and rejected
-    on this data: ~90% average is arguably survivable but the peaks project to 111%,
-    and a saturated CPU stretches runs into the 472s buffer until they skip - the
-    failure this project spent a day removing. 900000 wants 4 vCPUs, not 2.
+    650000 was tried and is too much. It was sized by scaling that 40% linearly to an
+    expected 65%; measured, it ran at 91.4% average and 96.1% peak, and every run
+    overran by ~8% - enough to eat the 472s buffer and make the following tick skip.
+    CPU does not scale linearly with candidates: the two measured points (40% at
+    400000, 91.4% at 650000) fit candidates^1.7, so each increment costs more than the
+    last. Extrapolating linearly from a single point is what got this wrong.
+
+    575000 projects to ~74-76% on that curve - from two points rather than one, so
+    still a projection, but a better-founded one. If runs come in near 3128s and CPU
+    under ~80%, this is the ceiling for 2 vCPUs; 650000+ wants c6g.xlarge.
 
     ssh carries the largest candidate count because it is the cheapest per candidate:
     a 0.75% hit rate against http's 1.51% and https's 1.66%, so it buys the most
@@ -115,9 +120,9 @@ variable "scan_protocol_budgets" {
     rate_pps   = number
   }))
   default = {
-    http  = { candidates = 200000, rate_pps = 64 }
+    http  = { candidates = 175000, rate_pps = 56 }
     https = { candidates = 150000, rate_pps = 48 }
-    ssh   = { candidates = 300000, rate_pps = 96 }
+    ssh   = { candidates = 250000, rate_pps = 80 }
   }
 }
 
