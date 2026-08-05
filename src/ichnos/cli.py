@@ -387,7 +387,11 @@ def cmd_responsive_refresh(args: argparse.Namespace) -> int:
         return 1
 
     store = _build_store(args.store, settings)
-    protocols = [args.protocol] if args.protocol else [e.protocol for e in store.schedule.list_all()]
+    # list_enabled, not list_all - ScheduleStore has no list_all, and a disabled
+    # protocol should not get a list built for it anyway.
+    protocols = [args.protocol] if args.protocol else [
+        e.protocol for e in store.schedule.list_enabled()
+    ]
 
     failures = 0
     for protocol in protocols:

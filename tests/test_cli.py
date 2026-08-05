@@ -1,4 +1,5 @@
 from datetime import datetime
+from types import SimpleNamespace
 from datetime import timezone
 
 import ichnos.cli as cli_module
@@ -294,3 +295,41 @@ def test_cmd_refresh_fails_for_unknown_protocol(monkeypatch, tmp_path):
 
     args = cli_module.build_parser().parse_args(["refresh", "--protocol", "ftp", "--store", "memory"])
     assert cli_module.cmd_refresh(args) == 1
+
+
+def test_cmd_responsive_refresh_enumerates_scheduled_protocols(monkeypatch, tmp_path):
+    """Regression: this enumerated protocols via `store.schedule.list_all()`, which
+    does not exist - ScheduleStore only has list_enabled/get/put. The job crashed on
+    its first line every night and produced nothing, and because it is the evidence
+    for replacing CurrentState, the failure was invisible until someone went looking
+    for output that was never going to appear.
+
+    Exercised against a real store rather than a mock precisely so a missing method
+    surfaces instead of being auto-created."""
+    store = InMemoryStore()
+    store.schedule.put(ScheduleEntry(protocol="http", port=80, zgrab2_module="http"))
+    store.schedule.put(ScheduleEntry(protocol="https", port=443, zgrab2_module="tls"))
+    store.schedule.put(
+        ScheduleEntry(protocol="ssh", port=22, zgrab2_module="ssh", enabled=False)
+    )
+    monkeypatch.setattr(cli_module, "InMemoryStore", lambda: store)
+    monkeypatch.setattr(cli_module, "fetch_access_token", lambda *a, **k: "token")
+
+    refreshed = []
+
+    def fake_refresh(protocol, path, **kwargs):
+        refreshed.append(protocol)
+        return True
+
+    monkeypatch.setattr(cli_module, "refresh_protocol", fake_refresh)
+    monkeypatch.setenv("ICHNOS_OPTERYX_CLIENT_ID", "id")
+    monkeypatch.setenv("ICHNOS_OPTERYX_CLIENT_SECRET", "secret")
+    monkeypatch.setenv(
+        "ICHNOS_KNOWN_RESPONSIVE_PATH", str(tmp_path / "known-{protocol}.conf")
+    )
+
+    args = SimpleNamespace(protocol=None, store="memory")
+    rc = cli_module.cmd_responsive_refresh(args)
+
+    assert rc == 0
+    assert sorted(refreshed) == ["http", "https"]  # ssh is disabled, so not built
