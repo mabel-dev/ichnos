@@ -240,9 +240,10 @@ def cmd_refresh(args: argparse.Namespace) -> int:
     rate_limiter = TokenBucket(1.0 / settings.refresh_rate_per_second, burst=1)
     scan_id = f"{args.protocol}-refresh-{uuid.uuid4().hex[:12]}"
     logger.info(
-        "refresh %s starting: protocol=%s port=%s rate=%g/s concurrency=%d",
+        "refresh %s starting: protocol=%s port=%s rate=%g/s concurrency=%d budget=%gs",
         scan_id, args.protocol, entry.port,
         settings.refresh_rate_per_second, settings.grab_concurrency,
+        settings.refresh_duration_seconds,
     )
 
     outcome = run_refresh_scan(
@@ -256,6 +257,7 @@ def cmd_refresh(args: argparse.Namespace) -> int:
         version_index=store.version_index,
         user_agent=settings.scan_user_agent,
         concurrency=settings.grab_concurrency,
+        time_budget_seconds=settings.refresh_duration_seconds or None,
     )
     _write_pending_outcome(settings, outcome)
 

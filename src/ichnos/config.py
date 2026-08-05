@@ -84,6 +84,27 @@ class Settings:
     # is what stops that growing without bound (see responsive.py).
     refresh_rate_per_second: float = 10.0
 
+    # How long a single `refresh` run may spend, in seconds. 0 means unbounded.
+    #
+    # Refresh's cost used to be set by how many hosts we knew, which is discovery's
+    # output - so scaling discovery scaled refresh, and refresh is far slower per host.
+    # Exhaustive refresh was fine at 85,000 hosts (2.4h at 10/s) and could not complete
+    # within a day by roughly 350,000, which at current discovery rates is days away,
+    # not months. A job that cannot finish does not fail loudly: its flock guard skips
+    # the next run and nothing logs a refresh that never started.
+    #
+    # A time budget makes the cost fixed - duration x rate - regardless of how many
+    # hosts exist. What it trades away is "everything re-checked daily": coverage
+    # becomes "everything eventually", with the cycle stretching as the known set grows
+    # (33,000 hosts per 55-minute run, so ~2.6 days at 85,000 hosts and ~59 days at
+    # 1.9M). That is the right shape for building a longitudinal record of what the
+    # internet runs; it is the wrong shape for watching a specific host, which this
+    # project does not claim to do.
+    #
+    # The ordering is what makes it work without a stored cursor - see
+    # run_refresh_scan.
+    refresh_duration_seconds: float = 3300.0  # 55 minutes
+
     # ZMap's own runtime gateway-MAC ARP resolution turned out to be unreliable at the
     # invocation volume this project's earlier per-candidate design made (see
     # scanner.py's module docstring) - resolved once at boot (the OS's own ARP, via
@@ -283,6 +304,9 @@ class Settings:
             rate_interval_seconds=_env_float("RATE_INTERVAL_SECONDS", cls.rate_interval_seconds),
             refresh_rate_per_second=_env_float(
                 "REFRESH_RATE_PER_SECOND", cls.refresh_rate_per_second
+            ),
+            refresh_duration_seconds=_env_float(
+                "REFRESH_DURATION_SECONDS", cls.refresh_duration_seconds
             ),
             zmap_gateway_mac=_env("ZMAP_GATEWAY_MAC", cls.zmap_gateway_mac),
             zmap_cooldown_seconds=_env_int("ZMAP_COOLDOWN_SECONDS", cls.zmap_cooldown_seconds),

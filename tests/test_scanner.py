@@ -1076,3 +1076,84 @@ def test_refresh_still_skips_blocklisted_hosts_without_grabbing_them(tmp_path):
     assert "10.0.0.9" not in grabbed
     assert "203.0.113.5" in grabbed
     assert outcome.metadata.targets_attempted == 2  # both considered, one skipped
+
+
+def test_refresh_stops_at_its_time_budget():
+    """Refresh's cost has to be set by the clock, not by how many hosts discovery has
+    found - otherwise scaling discovery scales refresh, and refresh is far slower per
+    host. A run that cannot finish does not fail loudly: flock skips the next one and
+    nothing logs a refresh that never started."""
+    def run_command(cmd, input=None):
+        return _grab_stdout()
+
+    store = InMemoryStore()
+    for i in range(1, 200):
+        store.current_state.put(CurrentStateRecord(
+            protocol="http", ip=f"203.0.113.{i}", port=80,
+            fingerprint_id="old", last_seen_date="2026-08-01",
+        ))
+
+    outcome = run_refresh_scan(
+        scan_id="http-budget", protocol="http", port=80, zgrab2_module="http",
+        blocklist_path="/tmp/x",
+        rate_limiter=TokenBucket(0.02, burst=1),  # 50/s -> ~199 hosts would need ~4s
+        current_state=store.current_state, version_index=store.version_index,
+        run_command=run_command, clock=_fixed_clock(), concurrency=4,
+        time_budget_seconds=0.5,
+    )
+
+    assert outcome.metadata.targets_attempted < 199, "budget did not stop the run"
+    assert outcome.metadata.targets_attempted > 0, "budget stopped it before it started"
+    assert outcome.metadata.status == "completed"  # stopping early is success, not failure
+
+
+def test_refresh_takes_oldest_checked_first_and_advances_them():
+    """The ordering IS the cursor - there is no stored offset. A host just re-checked
+    must sort to the back so the next run reaches different hosts, which only works
+    because last_seen_date is now written on every successful grab rather than only
+    when the fingerprint changed. With the old behaviour an unchanged host kept its
+    original date forever and a bounded run re-checked the same head of the list every
+    night."""
+    grabbed = []
+
+    def run_command(cmd, input=None):
+        grabbed.append(input.strip())
+        return _grab_stdout()
+
+    store = InMemoryStore()
+    # Deliberately inserted newest-first, so insertion order cannot be what is followed.
+    for ip, seen in [("203.0.113.3", "2026-08-04"),
+                     ("203.0.113.2", "2026-08-02"),
+                     ("203.0.113.1", "2026-07-30")]:
+        store.current_state.put(CurrentStateRecord(
+            protocol="http", ip=ip, port=80,
+            fingerprint_id="old", last_seen_date=seen,
+        ))
+
+    kwargs = dict(
+        protocol="http", port=80, zgrab2_module="http",
+        blocklist_path="/tmp/x", rate_limiter=TokenBucket(0.001, burst=1),
+        current_state=store.current_state, version_index=store.version_index,
+        run_command=run_command, clock=_fixed_clock(), concurrency=1,
+    )
+    run_refresh_scan(scan_id="http-order", **kwargs)
+
+    assert grabbed == ["203.0.113.1", "203.0.113.2", "203.0.113.3"]  # oldest first
+    assert {r.last_seen_date for r in store.current_state.list_all("http")} == {"2026-08-01"}
+
+    # Second pass, and the part that actually matters. Every host now already holds the
+    # fingerprint this grab produces, so none of them "changed" - which is the state
+    # nearly every host is in on a real refresh. Push their dates back and re-run: if
+    # the date only advanced on change, these would all stay stale and a bounded run
+    # would re-check this same head of the list forever, never reaching the tail.
+    for record in store.current_state.list_all("http"):
+        store.current_state.put(CurrentStateRecord(
+            protocol="http", ip=record.ip, port=80,
+            fingerprint_id=record.fingerprint_id, last_seen_date="2026-07-01",
+        ))
+    grabbed.clear()
+    outcome = run_refresh_scan(scan_id="http-order-2", **kwargs)
+
+    assert all(o.response_status == "success" for o in outcome.observations)
+    assert not outcome.new_versions, "fingerprints were unchanged, so no version rows"
+    assert {r.last_seen_date for r in store.current_state.list_all("http")} == {"2026-08-01"}

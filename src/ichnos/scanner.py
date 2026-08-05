@@ -39,6 +39,7 @@ import subprocess
 import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from time import monotonic
 from dataclasses import dataclass
 from dataclasses import field
 from datetime import datetime
@@ -312,9 +313,18 @@ def _record_grab_result(
         )
     )
 
-    if not is_new_for_host:
-        return
-
+    # Written on every successful grab, not only when the fingerprint changed. The
+    # date is what `refresh` orders by (oldest-checked first, see run_refresh_scan),
+    # and that ordering is the cursor: a host just re-checked has to sort to the back
+    # so the next run moves on to different hosts. Updating only on change left every
+    # unchanged host - which is nearly all of them - stuck at its original date, so a
+    # time-bounded refresh would have re-checked the same first N hosts every night
+    # and never reached the rest.
+    #
+    # The cost is one extra upsert per unchanged host, which is a write we used to
+    # skip. At refresh's pacing that is ~10/s, against DynamoDB round trips measured
+    # at ~3.4ms; on discovery it is close to free, since known-responsive hosts are
+    # excluded from the candidate pool and so almost every hit there is new anyway.
     current_state.put(
         CurrentStateRecord(
             protocol=protocol,
@@ -324,6 +334,9 @@ def _record_grab_result(
             last_seen_date=today,
         )
     )
+
+    if not is_new_for_host:
+        return
 
     # Two separate questions, deliberately asked separately - conflating them was a real
     # production bug. "Did this host change?" (above) is what CurrentState answers and
@@ -634,8 +647,9 @@ def run_refresh_scan(
     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     user_agent: Optional[str] = None,
     concurrency: int = DEFAULT_GRAB_CONCURRENCY,
+    time_budget_seconds: Optional[float] = None,
 ) -> ScanRunOutcome:
-    """Re-test every currently-known-responsive host for `protocol`, to detect drift
+    """Re-test currently-known-responsive hosts for `protocol`, to detect drift
     (a server upgrade, a cert rotation, a new fingerprint) since it was last seen.
 
     No ZMap discovery involved - the whole point is that these addresses are already
@@ -651,9 +665,19 @@ def run_refresh_scan(
     outcome = ScanRunOutcome(metadata=metadata)
     today = started_at.date().isoformat()
 
-    known_hosts = current_state.list_all(protocol)
+    # Oldest-checked first, which is what makes a time-bounded run work without any
+    # stored cursor. Process until the budget runs out; the hosts just done now carry
+    # today's date (see _record_grab_result) so they sort to the back, and the next run
+    # naturally continues where this one stopped. Nothing to persist, nothing to lose
+    # on an instance rebuild, and no drift if a run dies partway.
+    known_hosts = sorted(current_state.list_all(protocol), key=lambda r: r.last_seen_date)
     blocklist_cidrs = read_blocklist_file(blocklist_path)
-    logger.info("refresh %s: %d known %s hosts to re-check", scan_id, len(known_hosts), protocol)
+    deadline = None if not time_budget_seconds else monotonic() + time_budget_seconds
+    logger.info(
+        "refresh %s: %d known %s hosts, budget %s, rate-limited submissions",
+        scan_id, len(known_hosts), protocol,
+        f"{time_budget_seconds}s" if time_budget_seconds else "unbounded",
+    )
 
     # Same grab-concurrent / record-serialized split discovery uses, and for the same
     # reason - see `_grab_and_record`. The rate limiter stays in this loop rather than
@@ -680,6 +704,13 @@ def run_refresh_scan(
         max_workers=concurrency, thread_name_prefix="ichnos-refresh"
     ) as pool:
         for record in known_hosts:
+            if deadline is not None and monotonic() >= deadline:
+                logger.info(
+                    "refresh %s: time budget reached, stopping after %d of %d hosts - "
+                    "the remainder are older-first next run",
+                    scan_id, metadata.targets_attempted, len(known_hosts),
+                )
+                break
             metadata.targets_attempted += 1
             # Re-checked per host, not just once up front - a host could have been opted
             # out or jurisdiction-excluded after it was originally recorded (same reason
@@ -692,4 +723,11 @@ def run_refresh_scan(
 
     metadata.ended_at = clock()
     metadata.status = "completed"
+    covered = metadata.targets_attempted
+    if known_hosts:
+        logger.info(
+            "refresh %s: covered %d of %d known hosts (%.1f%%), full cycle ~%.1f runs",
+            scan_id, covered, len(known_hosts), covered / len(known_hosts) * 100,
+            len(known_hosts) / covered if covered else float("inf"),
+        )
     return outcome
