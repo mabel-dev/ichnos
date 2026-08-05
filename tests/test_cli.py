@@ -171,17 +171,19 @@ def test_cmd_scan_excludes_known_responsive_hosts_from_the_blocklist(monkeypatch
     # wiring end-to-end at the CLI layer, not just that _rebuild_blocklist accepts the
     # parameter.
     store = _seeded_store()
+    monkeypatch.setattr(cli_module, "InMemoryStore", lambda: store)
     # 93.184.216.34 (formerly example.com's IP) - deliberately outside every range in
     # blocklist.DEFAULT_BOGONS, so it shows up as its own distinct /32 entry rather
     # than collapsing into an existing bogon CIDR (a real /24 documentation range,
     # 203.0.113.0/24, would have silently absorbed a same-range test IP here).
-    store.current_state.put(
-        CurrentStateRecord(
-            protocol="http", ip="93.184.216.34", port=80, fingerprint_id="abc",
-            last_seen_date="2026-08-01",
-        )
+    #
+    # Seeded into the derived file rather than CurrentState: the source moved when the
+    # per-tick DynamoDB Scan was removed, but the property under test did not - the
+    # exclusion still has to reach the blocklist file that ZMap is handed.
+    (tmp_path / "known-responsive-http.conf").write_text("93.184.216.34\n")
+    monkeypatch.setenv(
+        "ICHNOS_KNOWN_RESPONSIVE_PATH", str(tmp_path / "known-responsive-{protocol}.conf")
     )
-    monkeypatch.setattr(cli_module, "InMemoryStore", lambda: store)
 
     fake_outcome = ScanRunOutcome(
         metadata=ScanMetadataRecord(
@@ -364,3 +366,70 @@ def test_scan_rate_pps_argument_overrides_the_env_default(monkeypatch, tmp_path)
     captured.clear()
     cli_module.cmd_scan(SimpleNamespace(rate_pps=None, **base))
     assert captured["rate_pps"] == 32  # falls back to the env default
+
+
+def test_cmd_scan_reads_the_derived_list_and_never_scans_currentstate(monkeypatch, tmp_path):
+    """The per-tick `current_state.list_all()` was a DynamoDB Scan over a table that
+    grew to 124,357 items in a day, three times an hour, purely to regenerate a
+    blocklist. It is now read from the file responsive-refresh derives. This asserts
+    both halves: the file is used, and the store is not scanned - a fallback that
+    quietly reinstated the scan would restore the cost without anyone noticing."""
+    store = InMemoryStore()
+    store.schedule.put(ScheduleEntry(protocol="http", port=80, zgrab2_module="http"))
+    store.current_state.put(CurrentStateRecord(
+        protocol="http", ip="198.51.100.99", port=80,
+        fingerprint_id="fp", last_seen_date="2026-08-01",
+    ))
+
+    def fail_if_scanned(_protocol):
+        raise AssertionError("cmd_scan scanned CurrentState instead of reading the file")
+
+    monkeypatch.setattr(store.current_state, "list_all", fail_if_scanned)
+    monkeypatch.setattr(cli_module, "InMemoryStore", lambda: store)
+
+    responsive = tmp_path / "known-responsive-http.conf"
+    responsive.write_text("203.0.113.7\n203.0.113.8\n")
+
+    captured = {}
+
+    def fake_rebuild(settings, store_, *, extra_exclusions=()):
+        captured["exclusions"] = list(extra_exclusions)
+
+    monkeypatch.setattr(cli_module, "_rebuild_blocklist", fake_rebuild)
+    monkeypatch.setattr(cli_module, "run_scan", lambda **kw: ScanRunOutcome(
+        metadata=ScanMetadataRecord(scan_id="s", protocol="http",
+                                    started_at=datetime.now(timezone.utc))))
+    monkeypatch.setenv("ICHNOS_KNOWN_RESPONSIVE_PATH", str(tmp_path / "known-responsive-{protocol}.conf"))
+    monkeypatch.setenv("ICHNOS_PENDING_DIR", str(tmp_path / "pending"))
+
+    rc = cli_module.cmd_scan(SimpleNamespace(
+        protocol="http", candidates=100, rate_pps=None, seed=None, target=None, store="memory"))
+
+    assert rc == 0
+    assert captured["exclusions"] == ["203.0.113.7", "203.0.113.8"]
+    # The CurrentState row is deliberately absent: the derived file is the source now.
+    assert "198.51.100.99" not in captured["exclusions"]
+
+
+def test_cmd_scan_still_runs_and_warns_when_the_derived_list_is_missing(monkeypatch, tmp_path):
+    """A missing list is wasteful, not unsafe - discovery re-finds hosts it knows, but
+    the exclusions and jurisdiction layers are untouched. It must not stop the scan,
+    because a rebuilt instance has no file until responsive-refresh runs."""
+    store = InMemoryStore()
+    store.schedule.put(ScheduleEntry(protocol="http", port=80, zgrab2_module="http"))
+    monkeypatch.setattr(cli_module, "InMemoryStore", lambda: store)
+
+    captured = {}
+    monkeypatch.setattr(cli_module, "_rebuild_blocklist",
+                        lambda s, st, *, extra_exclusions=(): captured.update(e=list(extra_exclusions)))
+    monkeypatch.setattr(cli_module, "run_scan", lambda **kw: ScanRunOutcome(
+        metadata=ScanMetadataRecord(scan_id="s", protocol="http",
+                                    started_at=datetime.now(timezone.utc))))
+    monkeypatch.setenv("ICHNOS_KNOWN_RESPONSIVE_PATH", str(tmp_path / "absent-{protocol}.conf"))
+    monkeypatch.setenv("ICHNOS_PENDING_DIR", str(tmp_path / "pending"))
+
+    rc = cli_module.cmd_scan(SimpleNamespace(
+        protocol="http", candidates=100, rate_pps=None, seed=None, target=None, store="memory"))
+
+    assert rc == 0
+    assert captured["e"] == []

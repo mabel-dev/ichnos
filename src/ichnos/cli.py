@@ -160,7 +160,35 @@ def cmd_scan(args: argparse.Namespace) -> int:
         logger.error("protocol %r is not an enabled ScanSchedule entry", args.protocol)
         return 1
 
-    known_responsive_ips = [r.ip for r in store.current_state.list_all(args.protocol)]
+    # Read from the file responsive-refresh derives nightly, not from a CurrentState
+    # scan. This used to be `store.current_state.list_all(protocol)` on every tick -
+    # and because the table is keyed by a single partition key, that is a DynamoDB
+    # *Scan* with a filter, so it reads every item and discards the two thirds
+    # belonging to other protocols (storage/dynamodb.py). Three of those an hour,
+    # against a table that grew from 15,199 items to 124,357 in a single day, each one
+    # then deserialised into Python objects and collapsed with ~22k jurisdiction CIDRs.
+    # That is a per-tick cost that scales with everything discovery has ever found and
+    # not at all with what this run is about to do.
+    #
+    # The file is a 15-day window (responsive.py) rather than the whole history, so it
+    # is bounded where CurrentState is not, and it is at most a night stale. That
+    # staleness costs almost nothing: a host found after the last rebuild stays in the
+    # candidate pool until the next one, and the chance of a random draw landing on any
+    # specific address again within a day is around 4 in 10,000.
+    #
+    # An empty list is wasteful, not unsafe - it means discovery re-finds hosts it
+    # already knows. The exclusions and jurisdiction layers, which are the ones that
+    # matter for not scanning people who asked not to be, are unaffected and still
+    # rebuilt from source on every tick below.
+    known_responsive_ips = read_responsive_file(
+        settings.known_responsive_path.format(protocol=args.protocol)
+    )
+    if not known_responsive_ips:
+        logger.warning(
+            "no known-responsive list for %s - discovery will re-find hosts it already "
+            "knows until responsive-refresh next runs",
+            args.protocol,
+        )
     _rebuild_blocklist(settings, store, extra_exclusions=known_responsive_ips)
 
     # Real, previously-undetected bug: a seed fixed for the whole calendar day meant

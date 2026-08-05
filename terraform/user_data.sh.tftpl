@@ -184,6 +184,17 @@ PYEOF
 /opt/ichnos-venv/bin/ichnos jurisdiction-refresh --source rir --countries "${jurisdiction_countries}" || \
   echo "jurisdiction-refresh failed at boot - will retry on its weekly cron schedule; scan.cmd_scan also falls back to the last S3 copy if one exists"
 
+# --- Known-responsive list: derive it now, because cmd_scan reads it from disk and
+# disk does not survive an instance replacement. Unlike the jurisdiction list there is
+# no S3 fallback and none is wanted - Opteryx is the canonical source and re-deriving
+# takes a few seconds, so a fresh copy beats a cached one. Without this a rebuilt
+# instance would scan with no known-responsive exclusion until 03:30, re-finding hosts
+# it already knows for up to a day; at eight rebuilds in a day that is not a corner
+# case. Non-fatal: an empty list wastes discovery budget, it does not scan anyone who
+# asked not to be. ---
+/opt/ichnos-venv/bin/ichnos responsive-refresh --store dynamodb || \
+  echo "responsive-refresh failed at boot - discovery will re-find known hosts until the 03:30 run"
+
 # --- nginx: HTTP only until certbot succeeds for the first time (deploy-hook below
 # adds the 443 block once a cert actually exists - no self-signed-placeholder
 # hackery needed since we don't depend on nginx being ready for cert *issuance*,
