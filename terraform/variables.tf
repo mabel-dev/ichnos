@@ -82,24 +82,38 @@ variable "scan_protocol_budgets" {
     leaves a 472s (15.1%) buffer inside the hourly cron interval.
 
     Split per protocol because they do not cost the same. A run's grab load is
-    candidates x hit rate, and the measured rates differ by more than 2x - https 1.71%
-    responsive, http 1.52%, ssh 0.77% - so an equal candidate count buys unequal work.
-    https was the protocol that skipped a tick overnight at a uniform 105000/32pps,
-    being the one that finds the most hosts to grab; ssh has by far the most headroom.
+    candidates x hit rate, and the measured rates differ by more than 2x - https 1.70%
+    responsive, http 1.56%, ssh 0.76% - so an equal candidate count buys unequal work.
+    https was the protocol that skipped a tick at a uniform 105000/32pps, being the one
+    that finds the most hosts to grab; ssh has by far the most headroom, which is why
+    it carries the largest candidate count here despite the smallest share of grabs.
 
     A budget that does not fit the hour is not merely tight: the cron entries are
     flock-guarded, so an overrunning run skips the following one. 150000 at 32pps would
     take 4690s against a 3600s hour and lose every other run - which is why the higher
     candidate counts carry the higher rate rather than sharing one.
+
+    The previous step (http 150000/48, https 100000/32, ssh 150000/48) measured clean:
+    3144s, 3149s and 3157s against a predicted 3128s, no skipped ticks, and hit rates
+    within 0.04pp of the figures the budgets were sized from. This doubles http and
+    https and takes ssh to 400000, for 900000 candidates an hour and 21.6M a day.
+
+    The constraint at these values is no longer the hour or the grab pool - the pool
+    sits at 12-18% utilisation - it is CPU. Consumption measured 0.82 vCPU at 400000
+    candidates an hour, which projects to ~1.84 of c6g.large's 2.00 vCPU here. That is
+    thin, and the projection is built on measurements taken while the old t4g.small was
+    credit-starved, so it may understate the real cost. If runs start drifting past
+    3128s, ssh is the one to trim: it is the cheapest per candidate and took the
+    largest jump.
   EOT
   type = map(object({
     candidates = number
     rate_pps   = number
   }))
   default = {
-    http  = { candidates = 150000, rate_pps = 48 }
-    https = { candidates = 100000, rate_pps = 32 }
-    ssh   = { candidates = 150000, rate_pps = 48 }
+    http  = { candidates = 300000, rate_pps = 96 }
+    https = { candidates = 200000, rate_pps = 64 }
+    ssh   = { candidates = 400000, rate_pps = 128 }
   }
 }
 

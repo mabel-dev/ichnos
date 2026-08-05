@@ -192,14 +192,26 @@ class Settings:
     #     32pps   ~60%                 (projected)
     #     64pps   ~120%                - cannot fit, at any slice size
     #
-    # Grabs currently run inline in the reader loop, one host at a time, at up to 30s
-    # each on timeout (_grab_and_record, called from _stream_discover_and_grab). They
-    # overlap ZMap's paced sending through the stdout pipe buffer, which is why runs
-    # finish at the predicted time despite substantial grab load - but they do not
-    # overlap *each other*, so past ~50pps the loop cannot drain a run's hits within
-    # that run's window no matter how the window is sized. Going beyond this rate needs
-    # a bounded worker pool for the ZGrab2 calls first; that is a change to make before
-    # the rate that requires it, not after a wave of skipped hours reveals it.
+    # That ceiling was real and was reached: at a uniform 105000/32pps, https - the
+    # protocol with the highest hit rate and so the most grabs - skipped a tick
+    # overnight and overran again the next morning, still draining its backlog 56
+    # minutes into a 54.7-minute budget. Fixed by the bounded worker pool in
+    # scanner.py, which lets grabs overlap each other rather than only overlapping
+    # ZMap's sending. With it, pool utilisation sits at 12-18% and the arrival rate
+    # would support several hundred pps.
+    #
+    # This is now only the *fallback* rate, for runs that pass no --rate-pps. The
+    # hourly cron entries set rate and candidates together per protocol, because the
+    # protocols do not cost the same - see terraform's scan_protocol_budgets. Measured
+    # hit rates, which those budgets are sized from and which have held to within
+    # 0.04pp across every step: http 1.56% responsive, https 1.70%, ssh 0.76%.
+    #
+    # What binds now is neither the hour nor the grab pool but CPU. The workload
+    # measured 0.82 vCPU at 400000 candidates an hour, on a t4g.small whose credit
+    # balance had been pinned at zero for hours while surplus accrued - burstable
+    # pricing is a discount for idling, and a scanner running 52 minutes in 60 never
+    # idles. Hence the move to fixed-performance c6g.large. Any further rate increase
+    # should be sized against CPU measured on that box, not against this figure.
     zmap_rate_pps: int = 32
 
     # User-Agent sent by ZGrab2's http module. AWS's network-scanning guidelines
