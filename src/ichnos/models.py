@@ -24,6 +24,10 @@ class ExclusionSource(str, Enum):
     SELF_SERVE = "self-serve"
     JURISDICTION = "jurisdiction"
     MANUAL = "manual"
+    # Reserved, private, documentation and multicast space (blocklist.DEFAULT_BOGONS).
+    # Never in the Exclusions table - it is a constant, not a request - but it is a real
+    # layer of what does not get scanned, so it belongs in the published record of that.
+    BOGON = "bogon"
 
 
 @dataclass(frozen=True)

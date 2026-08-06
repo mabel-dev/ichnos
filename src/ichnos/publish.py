@@ -33,6 +33,8 @@ from opteryx_upload import ConflictResolution
 from opteryx_upload import Target
 from opteryx_upload import UploadClient
 
+from .blocklist import DEFAULT_BOGONS
+from .models import ExclusionSource
 from .parquet import convert_to_parquet
 from .scanner import ScanRunOutcome
 
@@ -128,46 +130,68 @@ SCHEMAS: Dict[str, Dict[str, str]] = {
 # the Exclusions table holds right now.
 OVERWRITE_DATASETS = frozenset({"exclusions"})
 
-# OVERWRITE only takes effect when there is something to commit, and `datasets()` /
-# `read_pending_datasets()` both drop empty row lists - so an exclusions list that
-# emptied out would publish nothing at all and silently leave the previous generation
-# standing in Opteryx, which is the exact failure OVERWRITE exists to prevent. This
-# fixed row guarantees the snapshot is never empty, so "all exclusions removed" still
-# propagates as a real commit.
+# The published record of what does not get scanned. Three layers reach ZMap's
+# blocklist and all three belong here: without them this dataset carried only the
+# opt-out register - one sentinel row - so anyone querying it to see what we exclude
+# would have concluded we scan 10.0.0.0/8. The `source` column is what makes them
+# distinguishable, and ExclusionSource already had the vocabulary for it.
 #
-# 0.0.0.0 is the right choice for that because it changes nothing: 0.0.0.0/8 is already
-# in blocklist.DEFAULT_BOGONS ("this host on this network"), and build_blocklist's
-# collapse_addresses absorbs the /32 into that /8, so this row cannot alter the
-# blocklist by a single byte. A fixed timestamp, not utcnow(), so republishing an
-# unchanged table produces an identical snapshot rather than a spurious diff.
-SENTINEL_EXCLUSION = {
-    "ip_or_cidr": "0.0.0.0",
-    "source": "manual",
-    "requested_at": datetime(1970, 1, 1, tzinfo=timezone.utc).isoformat(),
-    "reason": "fixed sentinel - keeps the exclusions snapshot non-empty so OVERWRITE always commits",
-    "requester_ip": None,
-}
+# Constant layers carry a fixed epoch rather than a real timestamp. `requested_at`
+# means "when did someone ask for this", which is only meaningful for the self-serve
+# rows; using the publish time instead would rewrite every row on every cycle and turn
+# an unchanged snapshot into a spurious diff every hour.
+_CONSTANT_LAYER_TIMESTAMP = datetime(1970, 1, 1, tzinfo=timezone.utc).isoformat()
 
 
-def exclusion_rows(exclusions) -> List[Dict]:
-    """Build the `exclusions` dataset: the current table contents plus the sentinel.
+def exclusion_rows(
+    exclusions,
+    *,
+    jurisdiction_cidrs=(),
+    bogons=DEFAULT_BOGONS,
+) -> List[Dict]:
+    """Build the `exclusions` dataset: every layer of what this scanner will not touch.
 
-    Takes `Exclusion` records (models.Exclusion) rather than reading the store itself -
-    publish.py has no storage dependency and shouldn't grow one.
+    Takes the records and lists rather than reading them itself - publish.py has no
+    storage or filesystem dependency and should not grow one.
+
+    The bogon layer also removes the need for the sentinel row this used to carry.
+    OVERWRITE only commits when there is something to commit, and empty datasets are
+    skipped, so an emptied opt-out register would previously have published nothing and
+    silently left the last generation standing. Bogons are a non-empty constant, so the
+    snapshot can no longer be empty and "all opt-outs withdrawn" still propagates.
     """
-    rows = [dict(SENTINEL_EXCLUSION)]
-    for exclusion in exclusions:
-        rows.append(
-            {
-                "ip_or_cidr": exclusion.ip_or_cidr,
-                # `source` is an ExclusionSource (a str Enum) - str() would render it
-                # as "ExclusionSource.SELF_SERVE", so take .value explicitly.
-                "source": exclusion.source.value,
-                "requested_at": exclusion.requested_at.isoformat(),
-                "reason": exclusion.reason,
-                "requester_ip": exclusion.requester_ip,
-            }
-        )
+    rows = [
+        {
+            "ip_or_cidr": cidr,
+            "source": ExclusionSource.BOGON.value,
+            "requested_at": _CONSTANT_LAYER_TIMESTAMP,
+            "reason": "reserved, private or non-routable space",
+            "requester_ip": None,
+        }
+        for cidr in bogons
+    ]
+    rows.extend(
+        {
+            "ip_or_cidr": cidr,
+            "source": ExclusionSource.JURISDICTION.value,
+            "requested_at": _CONSTANT_LAYER_TIMESTAMP,
+            "reason": "jurisdiction pre-exclusion",
+            "requester_ip": None,
+        }
+        for cidr in jurisdiction_cidrs
+    )
+    rows.extend(
+        {
+            "ip_or_cidr": exclusion.ip_or_cidr,
+            # `source` is an ExclusionSource (a str Enum) - str() would render it as
+            # "ExclusionSource.SELF_SERVE", so take .value explicitly.
+            "source": exclusion.source.value,
+            "requested_at": exclusion.requested_at.isoformat(),
+            "reason": exclusion.reason,
+            "requester_ip": exclusion.requester_ip,
+        }
+        for exclusion in exclusions
+    )
     return rows
 
 

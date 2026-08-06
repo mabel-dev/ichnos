@@ -316,7 +316,10 @@ def cmd_publish(args: argparse.Namespace) -> int:
     # an idle hour has to propagate just as promptly as one withdrawn during a busy one.
     # exclusion_rows() always returns at least the sentinel, so this is never empty.
     store = _build_store(args.store, settings)
-    datasets["exclusions"] = exclusion_rows(store.exclusions.list_all())
+    datasets["exclusions"] = exclusion_rows(
+        store.exclusions.list_all(),
+        jurisdiction_cidrs=_read_jurisdiction_cidrs(settings.jurisdiction_blocklist_path),
+    )
 
     from opteryx_upload import PATAuthenticator
     from opteryx_upload import UploadClient

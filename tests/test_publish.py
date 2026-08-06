@@ -6,12 +6,12 @@ from types import SimpleNamespace
 
 from opteryx_upload import ConflictResolution
 
+from ichnos.blocklist import DEFAULT_BOGONS
 from ichnos.blocklist import build_blocklist
 from ichnos.models import Exclusion
 from ichnos.models import ExclusionSource
 from ichnos.models import Observation
 from ichnos.models import ScanMetadataRecord
-from ichnos.publish import SENTINEL_EXCLUSION
 from ichnos.publish import PublishBatch
 from ichnos.publish import PublishError
 from ichnos.publish import append_ndjson
@@ -120,7 +120,7 @@ def test_exclusions_commit_with_overwrite_and_everything_else_appends():
     client = FakeClient()
     publish_hour(
         client,
-        {"observations": [{"ip": "1.2.3.4"}], "exclusions": [{"ip_or_cidr": "0.0.0.0"}]},
+        {"observations": [{"ip": "1.2.3.4"}], "exclusions": [{"ip_or_cidr": "10.0.0.0/8"}]},
         workspace="scan", collection="measurement", tmp_dir=str(tempfile.mkdtemp()),
         convert=fake_convert,
     )
@@ -131,12 +131,11 @@ def test_exclusions_commit_with_overwrite_and_everything_else_appends():
     assert resolutions["exclusions"] == ConflictResolution.OVERWRITE
 
 
-def test_exclusion_rows_always_carries_the_sentinel_so_overwrite_always_commits():
-    # An emptied exclusions list must still publish. publish_hour skips empty datasets,
-    # so without a guaranteed row "all exclusions removed" would commit nothing and
-    # leave the previous generation standing - the exact case OVERWRITE exists for.
-    assert exclusion_rows([]) == [SENTINEL_EXCLUSION]
-
+def test_exclusion_rows_carries_all_three_layers_that_reach_the_blocklist():
+    """The dataset used to be built from the Exclusions table alone, so it published the
+    opt-out register and called it "exclusions" - anyone querying it to see what this
+    scanner avoids would have concluded it scans 10.0.0.0/8. All three layers that
+    reach ZMap's blocklist have to be here, distinguishable by source."""
     rows = exclusion_rows(
         [
             Exclusion(
@@ -146,21 +145,43 @@ def test_exclusion_rows_always_carries_the_sentinel_so_overwrite_always_commits(
                 reason="opted out",
                 requester_ip="198.51.100.7",
             )
-        ]
+        ],
+        jurisdiction_cidrs=["175.45.176.0/22"],
     )
-    assert rows[0] == SENTINEL_EXCLUSION
-    assert rows[1]["ip_or_cidr"] == "203.0.113.0/24"
+    by_source = {}
+    for row in rows:
+        by_source.setdefault(row["source"], []).append(row["ip_or_cidr"])
+
+    assert "10.0.0.0/8" in by_source["bogon"]  # RFC1918
+    assert "192.168.0.0/16" in by_source["bogon"]
+    assert by_source["jurisdiction"] == ["175.45.176.0/22"]
+    assert by_source["self-serve"] == ["203.0.113.0/24"]
+
+    self_serve = next(r for r in rows if r["source"] == "self-serve")
     # .value, not str() - ExclusionSource is a str Enum and str() renders the repr.
-    assert rows[1]["source"] == "self-serve"
-    assert rows[1]["requested_at"] == "2026-01-02T03:04:05+00:00"
+    assert self_serve["requested_at"] == "2026-01-02T03:04:05+00:00"
+    assert self_serve["requester_ip"] == "198.51.100.7"
 
 
-def test_sentinel_exclusion_cannot_change_the_blocklist():
-    # It is only there to keep the snapshot non-empty, so it must be inert. 0.0.0.0/8 is
-    # already a bogon, and collapse_addresses absorbs the /32 into it.
-    without = build_blocklist(exclusion_entries=[])
-    with_sentinel = build_blocklist(exclusion_entries=[SENTINEL_EXCLUSION["ip_or_cidr"]])
-    assert without == with_sentinel
+def test_exclusion_rows_is_never_empty_so_overwrite_always_commits():
+    """publish_hour skips empty datasets, so with an emptied opt-out register the
+    snapshot would commit nothing and silently leave the previous generation standing -
+    the exact case OVERWRITE exists for. The bogon layer is a non-empty constant, which
+    is what makes that unreachable; it replaced a sentinel row that existed only to
+    guarantee this."""
+    rows = exclusion_rows([])
+    assert len(rows) == len(DEFAULT_BOGONS)
+    assert all(r["source"] == "bogon" for r in rows)
+
+
+def test_constant_layers_do_not_change_between_publishes():
+    """An unchanged snapshot must serialise identically, or every hourly cycle rewrites
+    the whole dataset and an OVERWRITE diff stops meaning anything. Only the self-serve
+    rows carry a real requested_at; the generated layers carry a fixed epoch rather than
+    the publish time."""
+    assert exclusion_rows([], jurisdiction_cidrs=["175.45.176.0/22"]) == exclusion_rows(
+        [], jurisdiction_cidrs=["175.45.176.0/22"]
+    )
 
 
 def test_publish_hour_raises_and_stops_on_inspect_issues(tmp_path):
