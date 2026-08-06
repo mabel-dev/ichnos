@@ -7,7 +7,6 @@ from types import SimpleNamespace
 from opteryx_upload import ConflictResolution
 
 from ichnos.blocklist import DEFAULT_BOGONS
-from ichnos.blocklist import build_blocklist
 from ichnos.models import Exclusion
 from ichnos.models import ExclusionSource
 from ichnos.models import Observation
