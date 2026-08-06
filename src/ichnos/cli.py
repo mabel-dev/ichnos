@@ -41,6 +41,7 @@ persist between invocations and is not meant for anything beyond a demo.
 from __future__ import annotations
 
 import argparse
+import functools
 import os
 import sys
 import uuid
@@ -72,6 +73,7 @@ from .ratelimit import TokenBucket
 from .s3sync import download_file as s3_download_file
 from .s3sync import upload_file as s3_upload_file
 from .scanner import ScanRunOutcome
+from .scanner import _default_run_command
 from .scanner import run_refresh_scan
 from .scanner import run_scan
 from .storage.memory import InMemoryStore
@@ -224,6 +226,9 @@ def cmd_scan(args: argparse.Namespace) -> int:
     )
 
     outcome = run_scan(
+        run_command=functools.partial(
+            _default_run_command, timeout=settings.grab_timeout_seconds
+        ),
         scan_id=scan_id,
         protocol=args.protocol,
         port=entry.port,
@@ -274,6 +279,9 @@ def cmd_refresh(args: argparse.Namespace) -> int:
     )
 
     outcome = run_refresh_scan(
+        run_command=functools.partial(
+            _default_run_command, timeout=settings.grab_timeout_seconds
+        ),
         scan_id=scan_id,
         protocol=args.protocol,
         port=entry.port,

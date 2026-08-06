@@ -122,6 +122,15 @@ ICHNOS_RATE_INTERVAL_SECONDS=${rate_interval_seconds}
 # interval, and moving one alone changes how long a scan takes. This env value is only
 # the fallback for runs that do not pass --rate-pps.
 ICHNOS_ZMAP_RATE_PPS=${zmap_rate_pps}
+# Refresh's knobs, exposed for the same reason as the discovery rate above: these were
+# added to config.py without a line here, so they could only be changed by reinstalling
+# the package - the exact gap ICHNOS_ZMAP_RATE_PPS exists to close, reopened. The grab
+# timeout is the one that matters most: it, not the rate, is what limits refresh, since
+# a host that has gone away holds a worker for the whole timeout.
+ICHNOS_REFRESH_RATE_PER_SECOND=${refresh_rate_per_second}
+ICHNOS_REFRESH_DURATION_SECONDS=${refresh_duration_seconds}
+ICHNOS_GRAB_TIMEOUT_SECONDS=${grab_timeout_seconds}
+ICHNOS_GRAB_CONCURRENCY=${grab_concurrency}
 ICHNOS_ZMAP_GATEWAY_MAC='$GATEWAY_MAC'
 ICHNOS_OPTERYX_WORKSPACE='${opteryx_workspace}'
 ICHNOS_OPTERYX_COLLECTION='${opteryx_collection}'

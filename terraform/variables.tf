@@ -74,6 +74,30 @@ variable "zmap_rate_pps" {
   default     = 32
 }
 
+variable "refresh_rate_per_second" {
+  description = "How many known hosts a second `refresh` may re-grab. Not the limiting factor in practice - grab_timeout_seconds is, since refresh targets a 15-day window and a host that has gone away occupies a worker for the whole timeout. Kept below the pool's real throughput so the number means something."
+  type        = number
+  default     = 1
+}
+
+variable "refresh_duration_seconds" {
+  description = "Wall-clock budget for one `refresh` run. Makes refresh cost duration x rate rather than scaling with how many hosts discovery has found; coverage becomes a rolling cycle rather than a daily sweep. 0 means unbounded."
+  type        = number
+  default     = 3300
+}
+
+variable "grab_timeout_seconds" {
+  description = "Bound on a single ZGrab2 invocation. Dropped from 30s: discovery measured a 585ms median and 1195ms p95, so 10s is eight times the p95 and costs almost no real grabs, while a dead host no longer holds a worker for half a minute. This was refresh's actual bottleneck - at 30s an 8-worker pool managed 0.8/s against a configured 10/s."
+  type        = number
+  default     = 10
+}
+
+variable "grab_concurrency" {
+  description = "How many ZGrab2 grabs may be in flight at once, for both discovery and refresh. Bounds simultaneous outbound handshakes; every one is to a different host, so it does not make the scan heavier for anyone being scanned."
+  type        = number
+  default     = 8
+}
+
 variable "scan_protocol_budgets" {
   description = <<-EOT
     Per-protocol discovery budget: candidates per hourly run, and the ZMap `--rate` to

@@ -81,7 +81,13 @@ class Settings:
     # handshake to a host that has answered before. It is a knob precisely because the
     # right value depends on how large the known set gets - and Stage 3's 15-day window
     # is what stops that growing without bound (see responsive.py).
-    refresh_rate_per_second: float = 10.0
+    # 1/s. Deliberately far below what the machinery could push, because the rate is
+    # not what limits refresh - the grab timeout is. At 10/s the token bucket released
+    # ten hosts a second into an 8-worker pool that was managing 0.8/s, so the bucket
+    # was decorative and the queue simply grew. Pacing below the pool's real throughput
+    # makes the number mean something again, and leaves refresh visibly gentle against
+    # discovery's hundreds of packets a second.
+    refresh_rate_per_second: float = 1.0
 
     # How long a single `refresh` run may spend, in seconds. 0 means unbounded.
     #
@@ -103,6 +109,11 @@ class Settings:
     # The ordering is what makes it work without a stored cursor - see
     # run_refresh_scan.
     refresh_duration_seconds: float = 3300.0  # 55 minutes
+
+    # Bound on a single ZGrab2 invocation. See scanner.py's
+    # DEFAULT_COMMAND_TIMEOUT_SECONDS for why this dropped from 30s to 10s - in short,
+    # it was refresh's real bottleneck, not any rate setting.
+    grab_timeout_seconds: float = 10.0
 
     # ZMap's own runtime gateway-MAC ARP resolution turned out to be unreliable at the
     # invocation volume this project's earlier per-candidate design made (see
@@ -310,6 +321,7 @@ class Settings:
             zmap_cooldown_seconds=_env_int("ZMAP_COOLDOWN_SECONDS", cls.zmap_cooldown_seconds),
             zmap_rate_pps=_env_int("ZMAP_RATE_PPS", cls.zmap_rate_pps),
             grab_concurrency=_env_int("GRAB_CONCURRENCY", cls.grab_concurrency),
+            grab_timeout_seconds=_env_float("GRAB_TIMEOUT_SECONDS", cls.grab_timeout_seconds),
             scan_user_agent=_env("SCAN_USER_AGENT", cls.scan_user_agent),
             opteryx_workspace=_env("OPTERYX_WORKSPACE", cls.opteryx_workspace),
             opteryx_collection=_env("OPTERYX_COLLECTION", cls.opteryx_collection),

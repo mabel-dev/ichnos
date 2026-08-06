@@ -65,12 +65,23 @@ logger = get_logger(__name__)
 CommandRunner = Callable[[List[str], Optional[str]], str]
 
 
-DEFAULT_COMMAND_TIMEOUT_SECONDS = 30
+DEFAULT_COMMAND_TIMEOUT_SECONDS = 10
 """Bound on ZGrab2 invocations (called once per responsive address ZMap's stream
-reports - still a discrete subprocess.run call, see grab_one) and on the target_ip
-path's single ZMap call. A hung external tool must never be able to stall a scan
-indefinitely - discovered the hard way before this existed."""
+reports) and on the target_ip path's single ZMap call. A hung external tool must never
+be able to stall a scan indefinitely - discovered the hard way before this existed.
 
+Was 30s, which turned out to be the binding constraint on refresh rather than any rate
+setting. Refresh re-checks hosts from a 15-day window, so a large share of its targets
+have simply gone away and every one of those held a worker for the full timeout: with
+8 workers that capped throughput near 0.8/s against a configured 10/s, and coverage at
+2.7-7.8% of the known set per run.
+
+10s costs almost nothing in real grabs. Discovery measured a 585ms median and 1195ms
+p95 over 301 hosts, so this is still eight times the p95 - a host that has not completed
+a handshake in ten seconds is not usefully distinguishable from one that never will,
+and it is recorded as `grab-failed` either way. The saving is entirely in how long a
+dead host is allowed to occupy a worker.
+"""
 
 def _default_run_command(
     cmd: List[str], input: Optional[str] = None, *, timeout: float = DEFAULT_COMMAND_TIMEOUT_SECONDS

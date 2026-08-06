@@ -15,29 +15,33 @@ data "aws_ami" "ubuntu_arm64" {
 
 locals {
   user_data = templatefile("${path.module}/user_data.sh.tftpl", {
-    region                 = var.aws_region
-    eip_allocation_id      = aws_eip.scanner.id
-    scanner_public_ip      = aws_eip.scanner.public_ip
-    exclusions_table       = aws_dynamodb_table.exclusions.name
-    schedule_table         = aws_dynamodb_table.scan_schedule.name
-    version_index_table    = aws_dynamodb_table.version_index.name
-    rate_interval_seconds  = var.rate_interval_seconds
-    zmap_rate_pps          = var.zmap_rate_pps
-    scan_protocol_budgets  = var.scan_protocol_budgets
-    opteryx_workspace      = var.opteryx_workspace
-    opteryx_collection     = var.opteryx_collection
-    opteryx_pat_secret_arn = aws_secretsmanager_secret.opteryx_pat.arn
-    organisation_name      = var.organisation_name
-    abuse_email            = var.abuse_email
-    domain_name            = var.domain_name
-    jurisdiction_countries = join(",", var.jurisdiction_countries)
-    jurisdiction_s3_bucket = aws_s3_bucket.data.bucket
-    jurisdiction_s3_key    = "jurisdiction/jurisdiction-blocklist.conf"
-    cert_s3_bucket         = aws_s3_bucket.data.bucket
-    cert_s3_key            = "certs/letsencrypt.tar.gz"
-    ichnos_git_url         = var.ichnos_git_url
-    ichnos_git_ref         = var.ichnos_git_ref
-    log_group_name         = aws_cloudwatch_log_group.scanner.name
+    region                   = var.aws_region
+    eip_allocation_id        = aws_eip.scanner.id
+    scanner_public_ip        = aws_eip.scanner.public_ip
+    exclusions_table         = aws_dynamodb_table.exclusions.name
+    schedule_table           = aws_dynamodb_table.scan_schedule.name
+    version_index_table      = aws_dynamodb_table.version_index.name
+    rate_interval_seconds    = var.rate_interval_seconds
+    zmap_rate_pps            = var.zmap_rate_pps
+    refresh_rate_per_second  = var.refresh_rate_per_second
+    refresh_duration_seconds = var.refresh_duration_seconds
+    grab_timeout_seconds     = var.grab_timeout_seconds
+    grab_concurrency         = var.grab_concurrency
+    scan_protocol_budgets    = var.scan_protocol_budgets
+    opteryx_workspace        = var.opteryx_workspace
+    opteryx_collection       = var.opteryx_collection
+    opteryx_pat_secret_arn   = aws_secretsmanager_secret.opteryx_pat.arn
+    organisation_name        = var.organisation_name
+    abuse_email              = var.abuse_email
+    domain_name              = var.domain_name
+    jurisdiction_countries   = join(",", var.jurisdiction_countries)
+    jurisdiction_s3_bucket   = aws_s3_bucket.data.bucket
+    jurisdiction_s3_key      = "jurisdiction/jurisdiction-blocklist.conf"
+    cert_s3_bucket           = aws_s3_bucket.data.bucket
+    cert_s3_key              = "certs/letsencrypt.tar.gz"
+    ichnos_git_url           = var.ichnos_git_url
+    ichnos_git_ref           = var.ichnos_git_ref
+    log_group_name           = aws_cloudwatch_log_group.scanner.name
   })
 }
 

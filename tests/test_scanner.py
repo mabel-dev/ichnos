@@ -6,6 +6,7 @@ from datetime import timezone
 import pytest
 
 from ichnos.ratelimit import TokenBucket
+from ichnos.scanner import DEFAULT_COMMAND_TIMEOUT_SECONDS
 from ichnos.scanner import DEFAULT_ZMAP_COOLDOWN_SECONDS
 from ichnos.scanner import DEFAULT_ZMAP_RATE_PPS
 from ichnos.scanner import _default_run_command
@@ -1088,3 +1089,32 @@ def test_refresh_processes_hosts_in_the_order_given_and_records_each_one():
     assert grabbed == known  # order preserved, not sorted or shuffled
     assert [o.ip for o in outcome.observations] == known
     assert all(o.response_status == "success" for o in outcome.observations)
+
+
+def test_grab_timeout_is_ten_seconds_not_thirty():
+    """The timeout was refresh's real bottleneck, not any rate setting: refresh targets
+    a 15-day window so many hosts have gone away, and each one held a worker for the
+    full 30s. With 8 workers that capped throughput near 0.8/s against a configured
+    10/s. Pinned because it is a number two subsystems depend on and neither names it."""
+    assert DEFAULT_COMMAND_TIMEOUT_SECONDS == 10
+
+
+def test_a_timed_out_grab_is_recorded_as_grab_failed_not_dropped():
+    """Shortening the timeout only trades latency for a slightly earlier verdict - the
+    host still gets an Observation. A dead host must never silently vanish from the
+    record, or "we did not look" and "it did not answer" become indistinguishable."""
+    def run_command(cmd, input=None):
+        return ""  # what _default_run_command returns after TimeoutExpired
+
+    store = InMemoryStore()
+    outcome = run_refresh_scan(
+        scan_id="http-timeout", protocol="http", port=80, zgrab2_module="http",
+        blocklist_path="/tmp/x", rate_limiter=TokenBucket(0.001, burst=1),
+        known_hosts=["203.0.113.44"], version_index=store.version_index,
+        run_command=run_command, clock=_fixed_clock(),
+    )
+
+    assert len(outcome.observations) == 1
+    assert outcome.observations[0].response_status == "grab-failed"
+    assert outcome.observations[0].fingerprint_id is None
+    assert outcome.metadata.hosts_responsive == 0
