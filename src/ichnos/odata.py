@@ -46,10 +46,32 @@ DEFAULT_ODATA_BASE = "https://odata.opteryx.app"
 DEFAULT_ODATA_PREFIX = "/api/v4"
 DEFAULT_TOKEN_URL = "https://authenticate.opteryx.app/token"
 
-MAX_TOP = 25000
-"""The service's documented ceiling for a single request's `$top`; a larger value is
-rejected with a 400. Set deliberately high rather than left to the default of 100 -
-this module's reads are bulk reads, and the default would turn one page into 250."""
+MAX_TOP = 100000
+"""The service's ceiling for a single request's `$top` - 100001 is rejected with
+"$top must be between 0 and 100000". Set to exactly the ceiling, and that is not just
+about efficiency: a read that fits in one page is the only read this feed answers
+correctly.
+
+Paginated `$apply` results are unstable. The row *count* is right and matches the
+equivalent SQL exactly, but the contents are not: rows are duplicated and others
+dropped, differently on every run. Measured against ssh observations, one query,
+same data, minutes apart:
+
+    $top=100000 (1 page)    86184 rows, 86184 distinct ip, 0 duplicated
+    $top=100000 (again)     86184 rows, 86184 distinct ip, 0 duplicated - identical
+    $top=25000  (4 pages)   86184 rows, 61348 distinct ip, 24836 duplicated
+    $top=25000  (again)     86184 rows, 57882 distinct ip, 28302 duplicated
+    $top=10000  (9 pages)   86184 rows, 58991 distinct ip
+
+SQL over the same window returns 86184 rows and 86184 distinct ip, so the engine, the
+filter and the aggregate are all correct - each page appears to be a fresh execution of
+an unordered query, so `$skip` lands somewhere different every time.
+
+The damage was silent. Nothing errors, the row count looks right, and the derived
+known-responsive lists simply carried duplicates and were missing hosts: 130408 lines
+for 80048 real http hosts, 123701 for 90221 https. Hence `_reject_paged_result` below -
+at 100000 nothing this project reads pages today, and the day something does, it must
+fail loudly rather than quietly produce a plausible wrong answer."""
 
 
 class ODataError(Exception):
@@ -130,9 +152,14 @@ def iter_rows(
     base_url: str = DEFAULT_ODATA_BASE,
     prefix: str = DEFAULT_ODATA_PREFIX,
     get: Optional[Callable[..., Any]] = None,
+    single_page: bool = False,
 ) -> Iterator[Dict[str, Any]]:
     """Yield every row of a query, following `@odata.nextLink` until the feed stops
     offering one.
+
+    `single_page=True` refuses to follow the link at all and raises instead, for callers
+    whose answer would be silently wrong if it did - see MAX_TOP for the measurements.
+    Paging this feed returns the right number of rows with the wrong rows in them.
 
     `path` is the three-part `{workspace}/{collection}/{dataset}` address - the same
     triple the Upload API's `Target` uses. `query` is a pre-encoded query string; it is
@@ -157,6 +184,13 @@ def iter_rows(
         next_link = payload.get("@odata.nextLink")
         if not next_link:
             break
+        if single_page:
+            raise ODataError(
+                f"{path}: result needs more than one page at $top={MAX_TOP}, and paged "
+                "reads from this feed are not trustworthy - the row count is right but "
+                "rows are duplicated and dropped non-deterministically (see MAX_TOP). "
+                "Narrow the query or fix the feed; do not page it."
+            )
         # Relative, and already percent-encoded - concatenate, never re-encode.
         url = next_link if next_link.startswith("http") else f"{base_url}{next_link}"
 
@@ -198,7 +232,8 @@ def grouped_max(
     query = f"$apply={quote(apply_expr, safe='()/,')}&$top={top}"
     return [
         row
-        for row in iter_rows(path, query, token=token, base_url=base_url, prefix=prefix, get=get)
+        for row in iter_rows(path, query, token=token, base_url=base_url, prefix=prefix,
+                             get=get, single_page=True)
         if all(row.get(c) is not None for c in columns)
     ]
 
@@ -230,7 +265,8 @@ def distinct_values(
 
     values = []
     for row in iter_rows(
-        path, query, token=token, base_url=base_url, prefix=prefix, get=get
+        path, query, token=token, base_url=base_url, prefix=prefix, get=get,
+        single_page=True,
     ):
         value = row.get(column)
         if value is not None:

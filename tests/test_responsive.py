@@ -6,6 +6,8 @@ import pytest
 from ichnos.odata import ODataError
 from ichnos.odata import distinct_values
 from ichnos.odata import fetch_access_token
+from ichnos.odata import grouped_max
+from ichnos.odata import iter_rows
 from ichnos.responsive import fetch_responsive_hosts
 from ichnos.responsive import read_responsive_file
 from ichnos.responsive import read_responsive_hosts
@@ -49,7 +51,7 @@ def test_distinct_values_composes_the_filter_inside_apply():
     )
     assert "%24apply" not in calls[0]  # we build it, we don't re-encode it
     assert "$apply=filter(protocol%20eq%20%27http%27)/groupby((ip))" in calls[0]
-    assert "$top=25000" in calls[0]
+    assert "$top=100000" in calls[0]
 
 
 def test_iter_rows_follows_nextlink_without_re_encoding_it():
@@ -60,7 +62,8 @@ def test_iter_rows_follows_nextlink_without_re_encoding_it():
         {"value": [{"ip": "1.1.1.1"}], "@odata.nextLink": "/api/v4/ws/coll/observations?%24skip=1"},
         {"value": [{"ip": "2.2.2.2"}]},
     ]
-    ips = distinct_values("ws/coll/observations", "ip", get=_fake_get(pages, calls))
+    ips = [r["ip"] for r in iter_rows("ws/coll/observations", "$top=1",
+                                      get=_fake_get(pages, calls))]
     assert ips == ["1.1.1.1", "2.2.2.2"]
     assert calls[1] == "https://odata.opteryx.app/api/v4/ws/coll/observations?%24skip=1"
 
@@ -78,7 +81,7 @@ def test_a_failed_page_raises_rather_than_returning_a_partial_result():
         return FakeResponse(pages[0])
 
     with pytest.raises(ODataError) as exc:
-        distinct_values("ws/coll/observations", "ip", get=get)
+        list(iter_rows("ws/coll/observations", "$top=1", get=get))
     assert "500" in str(exc.value)
 
 
@@ -254,3 +257,44 @@ def test_a_host_that_only_ever_failed_is_not_a_refresh_target():
     )
 
     assert [ip for ip, _ in hosts] == ["real"]
+
+
+def test_an_aggregate_read_refuses_to_paginate():
+    """Paged `$apply` results from this feed are silently wrong. The row count is right
+    and matches the equivalent SQL exactly, but the contents are not - rows are
+    duplicated and others dropped, differently on every run. Measured against ssh
+    observations, same query, same data, minutes apart:
+
+        $top=100000 (1 page)   86184 rows, 86184 distinct ip, 0 duplicated
+        $top=100000 (again)    86184 rows, 86184 distinct ip - byte-identical
+        $top=25000  (4 pages)  86184 rows, 61348 distinct ip, 24836 duplicated
+        $top=25000  (again)    86184 rows, 57882 distinct ip, 28302 duplicated
+
+    So the failure mode to design against is not an error, it is a plausible answer -
+    and it had already reached production, where the derived lists carried 130408 lines
+    for 80048 real http hosts. Nothing this project reads needs a second page at
+    $top=100000, and the day something does it must stop: responsive.py keeps the
+    previous list when a read raises, and has no way to tell a corrupt answer from a
+    good one."""
+    paged = [
+        {"value": [{"ip": "203.0.113.1", "last_at": "2026-08-01T00:00:00Z"}],
+         "@odata.nextLink": "/api/v4/ws/coll/observations?%24skip=1"},
+        {"value": [{"ip": "203.0.113.2", "last_at": "2026-08-02T00:00:00Z"}]},
+    ]
+
+    with pytest.raises(ODataError, match="more than one page"):
+        grouped_max("ws/coll/observations", "ip", "observed_at", "last_at",
+                    get=_fake_get(paged))
+
+
+def test_a_single_page_aggregate_read_is_returned_normally():
+    """The guard must not fire on the normal case - every real query fits today."""
+    rows = grouped_max(
+        "ws/coll/observations", ("ip", "response_status"), "observed_at", "last_at",
+        get=_fake_get([{"value": [
+            {"ip": "203.0.113.1", "response_status": "success",
+             "last_at": "2026-08-01T00:00:00Z"},
+        ]}]),
+    )
+    assert rows == [{"ip": "203.0.113.1", "response_status": "success",
+                     "last_at": "2026-08-01T00:00:00Z"}]
