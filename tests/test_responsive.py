@@ -98,21 +98,26 @@ def test_window_start_is_an_unquoted_iso_literal():
     assert "'" not in boundary
 
 
-def test_fetch_responsive_ips_asks_only_for_successful_grabs():
-    # Observations are also written for "closed" (an RST - host up, port refused) and
-    # "grab-failed". Neither is a host refresh can re-grab, and a closed port is exactly
-    # what discovery should keep sampling, so neither belongs in this list.
+def test_fetch_groups_by_ip_and_status_in_a_single_query():
+    """Membership and ordering are different questions and the feed answers both at
+    once. Grouping by (ip, response_status) returns one row per host per outcome, so
+    "did this host ever succeed" and "when did we last try it" come out of one round
+    trip - no second query, and no joining done here that the query engine can do."""
     calls = []
     fetch_responsive_hosts(
         "https", workspace="ichnos", collection="landing", token="t",
         now=datetime(2026, 8, 4, tzinfo=timezone.utc),
         get=_fake_get([{"value": []}], calls),
     )
+    assert len(calls) == 1, "membership and ordering must not cost two queries"
     url = calls[0]
-    assert "response_status%20eq%20%27success%27" in url
-    assert "aggregate(observed_at%20with%20max%20as%20last_seen)" in url
+    assert "groupby((ip,response_status)" in url
+    assert "aggregate(observed_at%20with%20max%20as%20last_at)" in url
     assert "protocol%20eq%20%27https%27" in url
     assert "observed_at%20ge%202026-07-20T00%3A00%3A00Z" in url
+    # Deliberately NOT filtered to success: a failed attempt still has to move the
+    # host's place in the queue, or it is re-tried every day forever.
+    assert "response_status%20eq%20%27success%27" not in url
     assert url.startswith("https://odata.opteryx.app/api/v4/ichnos/landing/observations?")
 
 
@@ -186,17 +191,66 @@ def test_responsive_file_roundtrips_pairs_and_tolerates_address_only_lines(tmp_p
     assert sorted(hosts, key=lambda h: h[1])[0][0] == "203.0.113.9"  # unknown -> first
 
 
-def test_fetch_returns_hosts_oldest_seen_first(tmp_path):
+def _row(ip, status, at):
+    return {"ip": ip, "response_status": status, "last_at": at}
+
+
+def test_fetch_returns_hosts_least_recently_attempted_first():
     """refresh streams the file and stops when its budget runs out, so the ordering has
     to be applied here rather than there - the feed will not $orderby an aggregate
     alias, so it is sorted client-side after the groupby."""
     pages = [{"value": [
-        {"ip": "203.0.113.3", "last_seen": "2026-08-04T00:00:00Z"},
-        {"ip": "203.0.113.1", "last_seen": "2026-07-30T00:00:00Z"},
-        {"ip": "203.0.113.2", "last_seen": "2026-08-02T00:00:00Z"},
+        _row("203.0.113.3", "success", "2026-08-04T00:00:00Z"),
+        _row("203.0.113.1", "success", "2026-07-30T00:00:00Z"),
+        _row("203.0.113.2", "success", "2026-08-02T00:00:00Z"),
     ]}]
     hosts = fetch_responsive_hosts(
         "http", workspace="ichnos", collection="landing", token="t",
         now=datetime(2026, 8, 5, tzinfo=timezone.utc), get=_fake_get(pages),
     )
     assert [ip for ip, _ in hosts] == ["203.0.113.1", "203.0.113.2", "203.0.113.3"]
+
+
+def test_a_failed_attempt_moves_a_host_down_the_queue():
+    """The bug this query shape exists to fix. Ordering by last *success* meant a host
+    whose grab failed never had its timestamp moved, so it sorted straight back to the
+    front on the next derivation and was re-attempted every day until it aged out.
+
+    Production, before the fix: all five hosts at the head of the ssh queue had failed
+    their grab on the previous run, and 311 of 1101 attempts were failures - so over a
+    quarter of refresh's budget went on re-trying the same dead hosts daily, ahead of
+    hosts nobody had looked at in a fortnight.
+
+    `dying` last succeeded longest ago, so last-success ordering puts it first. It was
+    tried most recently, so last-attempt ordering puts it last. That inversion is the
+    whole point."""
+    pages = [{"value": [
+        _row("dying", "success", "2026-07-25T00:00:00Z"),
+        _row("dying", "grab-failed", "2026-08-04T00:00:00Z"),
+        _row("healthy", "success", "2026-07-28T00:00:00Z"),
+        _row("stale", "success", "2026-07-26T00:00:00Z"),
+    ]}]
+    hosts = fetch_responsive_hosts(
+        "ssh", workspace="ichnos", collection="landing", token="t",
+        now=datetime(2026, 8, 5, tzinfo=timezone.utc), get=_fake_get(pages),
+    )
+
+    assert [ip for ip, _ in hosts] == ["stale", "healthy", "dying"]
+    assert hosts[-1] == ("dying", "2026-08-04T00:00:00Z")
+
+
+def test_a_host_that_only_ever_failed_is_not_a_refresh_target():
+    """Ordering counts every attempt; membership still counts only successes. A host
+    that answered ZMap but never completed a grab, or whose port is closed, has nothing
+    for refresh to re-grab and must not enter the list at all."""
+    pages = [{"value": [
+        _row("never-worked", "grab-failed", "2026-08-04T00:00:00Z"),
+        _row("refused", "closed", "2026-08-04T00:00:00Z"),
+        _row("real", "success", "2026-08-01T00:00:00Z"),
+    ]}]
+    hosts = fetch_responsive_hosts(
+        "ssh", workspace="ichnos", collection="landing", token="t",
+        now=datetime(2026, 8, 5, tzinfo=timezone.utc), get=_fake_get(pages),
+    )
+
+    assert [ip for ip, _ in hosts] == ["real"]

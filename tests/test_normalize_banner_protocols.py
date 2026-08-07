@@ -15,8 +15,19 @@ def _ftp(banner):
 
 
 def _telnet(banner, will=None, do=None):
+    """`will`/`do` are lists of option *objects*, exactly as ZGrab2 emits them:
+
+        "will": [{"name": "Suppress Go Ahead", "value": 3}]
+
+    This fixture used to build them as lists of bare strings, which is the whole reason
+    the dict-vs-dict TypeError in `_option_names` reached production green - the tests
+    exercised a shape ZGrab2 never produces. Take (name, value) pairs so the invented
+    shape cannot come back.
+    """
     return {"status": "success",
-            "result": {"banner": banner, "will": will or [], "do": do or []}}
+            "result": {"banner": banner,
+                       "will": [{"name": n, "value": v} for n, v in (will or [])],
+                       "do": [{"name": n, "value": v} for n, v in (do or [])]}}
 
 
 def _smtp(banner, ehlo=None, helo=None):

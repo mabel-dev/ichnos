@@ -312,6 +312,40 @@ def normalize_ftp(ftp_result: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _option_names(options: Any) -> List[str]:
+    """The `will`/`do` lists ZGrab2's telnet module returns, reduced to sortable names.
+
+    They are lists of *objects*, not strings - confirmed against a real grab:
+
+        "will": [{"name": "Suppress Go Ahead", "value": 3}, {"name": "Echo", "value": 1}]
+        "do":   [{"name": "Terminal Type", "value": 24}, ...]
+
+    `sorted()` over those raises `TypeError: '<' not supported between instances of
+    'dict' and 'dict'`, which is what this function exists to prevent - and not
+    hypothetically: it raised on every telnet host that completed a handshake, from the
+    first production run onwards, so the `telnet` dataset was never created at all (the
+    only telnet observations that survived were the grab-failed ones, which never reach
+    a normalizer). The exception surfaced as `failed to record grab` in the scan log
+    rather than as a crash, so the pipeline kept running with a silent hole in it.
+
+    `name` is the RFC label for the option code in `value`, so it identifies the option
+    exactly as the code does while staying readable in a query result. Anything that is
+    not a named object falls back to `str()`: the return value is a list of strings
+    whatever the input shape, because the caller's `sorted()` must not be able to raise
+    a second time on some shape a future ZGrab2 emits.
+    """
+    if not isinstance(options, list):
+        return []
+    names = []
+    for option in options:
+        if isinstance(option, dict):
+            name = option.get("name")
+            names.append(str(name) if name is not None else str(option.get("value")))
+        else:
+            names.append(str(option))
+    return names
+
+
 def normalize_telnet(telnet_result: Dict[str, Any]) -> Dict[str, Any]:
     """`telnet_result` is the `data.telnet` object from one ZGrab2 telnet-module line.
 
@@ -324,9 +358,9 @@ def normalize_telnet(telnet_result: Dict[str, Any]) -> Dict[str, Any]:
     ratio the other protocols show."""
     return {
         "banner": _stable_banner(_get(telnet_result, "result", "banner")),
-        "will_options": json.dumps(sorted(_get(telnet_result, "result", "will") or []),
+        "will_options": json.dumps(sorted(_option_names(_get(telnet_result, "result", "will"))),
                                    sort_keys=True),
-        "do_options": json.dumps(sorted(_get(telnet_result, "result", "do") or []),
+        "do_options": json.dumps(sorted(_option_names(_get(telnet_result, "result", "do"))),
                                  sort_keys=True),
     }
 

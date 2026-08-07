@@ -60,6 +60,11 @@ tighter - it is the cost side of the trade, re-grabbing hosts that may be long g
 
 OBSERVATIONS_DATASET = "observations"
 
+SUCCESS_STATUS = "success"
+"""The one `response_status` that makes a host a refresh target. `closed` and
+`grab-failed` rows exist for the same addresses and must not qualify - but they do
+count for *ordering*, since they record an attempt. See fetch_responsive_hosts."""
+
 
 def window_start(now: datetime, window_days: int = DEFAULT_WINDOW_DAYS) -> str:
     """The `observed_at ge ...` boundary, as an unquoted ISO-8601 literal.
@@ -82,25 +87,38 @@ def fetch_responsive_hosts(
     base_url: Optional[str] = None,
     get: Optional[Callable] = None,
 ) -> List[Tuple[str, str]]:
-    """(ip, last_seen) for every host that answered `protocol` within the window,
-    oldest-seen first.
+    """(ip, last_attempt) for every host that answered `protocol` within the window,
+    least-recently-attempted first.
 
-    `response_status eq 'success'` and not merely "we have a row": observations are also
-    written for `closed` (an RST - the host is up but the port is refused) and
+    Membership and ordering are two different questions and this asks both in one query,
+    grouping by `(ip, response_status)` so the feed returns one row per host per outcome.
+
+    *Membership* is `success` only, and not merely "we have a row": observations are
+    also written for `closed` (an RST - the host is up but the port is refused) and
     `grab-failed`. Neither belongs in this list. A closed port is exactly the kind of
     address discovery should keep sampling, and refresh has nothing to re-grab there.
 
-    The `last_seen` half is what lets CurrentState go. Refresh works oldest-checked
-    first, and that ordering used to come from a CurrentState column this code kept
-    up to date. It comes from the observations themselves now: refresh writes an
-    Observation for every host it re-checks, publish commits it within the hour, and
-    the next derivation sees the newer max(observed_at) and sorts that host to the
-    back. The cursor advances through the data pipeline rather than through a table
-    maintained on the side.
+    *Ordering* is the newest observation of any status, which is when we last **tried**
+    the host rather than when we last **saw** it. That distinction was a real bug.
+    Ordering by last success meant a host whose grab failed never had its timestamp
+    moved, so it sorted straight back to the front on the next derivation and was
+    re-attempted every single day until it aged out of the window. Confirmed in
+    production: all five hosts at the head of the ssh queue had failed their grab on the
+    previous run, and 311 of 1101 attempts (28%) were failures - so more than a quarter
+    of refresh's budget was being spent re-trying the same dead hosts daily, ahead of
+    hosts that had not been checked in a fortnight.
+
+    Ordering this way is also what lets CurrentState stay gone. Refresh works
+    least-recently-attempted first, and that ordering used to come from a CurrentState
+    column this code kept up to date. It comes from the observations themselves now:
+    refresh writes an Observation for every host it re-checks whatever the outcome,
+    publish commits it within the hour, and the next derivation sees the newer
+    max(observed_at) and sorts that host to the back. The cursor advances through the
+    data pipeline rather than through a table maintained on the side.
     """
     now = now or datetime.now(timezone.utc)
     where = (
-        f"protocol eq '{protocol}' and response_status eq 'success' "
+        f"protocol eq '{protocol}' "
         f"and observed_at ge {window_start(now, window_days)}"
     )
     kwargs = {"where": where, "token": token, "get": get}
@@ -108,10 +126,21 @@ def fetch_responsive_hosts(
         kwargs["base_url"] = base_url
     rows = grouped_max(
         f"{workspace}/{collection}/{OBSERVATIONS_DATASET}",
-        "ip", "observed_at", "last_seen", **kwargs
+        ("ip", "response_status"), "observed_at", "last_at", **kwargs
     )
+
+    responsive = set()
+    last_attempt: dict = {}
+    for row in rows:
+        ip = row["ip"]
+        stamp = row.get("last_at") or ""
+        if row.get("response_status") == SUCCESS_STATUS:
+            responsive.add(ip)
+        if stamp > last_attempt.get(ip, ""):
+            last_attempt[ip] = stamp
+
     return sorted(
-        ((r["ip"], r.get("last_seen") or "") for r in rows), key=lambda pair: pair[1]
+        ((ip, last_attempt.get(ip, "")) for ip in responsive), key=lambda pair: pair[1]
     )
 
 
