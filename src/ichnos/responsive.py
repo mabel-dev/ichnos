@@ -131,6 +131,54 @@ def write_responsive_file(path: str, hosts: List[Tuple[str, str]]) -> None:
     os.replace(tmp_path, path)
 
 
+def advance_responsive_cursor(
+    path: str,
+    processed_ips: List[str],
+    *,
+    now: Optional[datetime] = None,
+) -> bool:
+    """Move the hosts a refresh run just checked to the back of the list, so the next
+    run starts where this one stopped. True if the file was rewritten.
+
+    This exists because the file *is* the cursor and nothing was advancing it. `refresh`
+    reads the list, walks it from the top, and stops when its time budget runs out; the
+    ordering that makes that work - oldest-checked first - was only ever re-established
+    by `responsive-refresh`, which runs once a day. So the file sat unchanged between
+    03:30 and 03:30 while refresh read the same prefix out of it every hour.
+
+    Measured in production before this existed: the 20:40 ssh run grabbed 724 of 724
+    hosts from the head of the file, and four consecutive hourly runs returned 905, 905,
+    906 and 908 responsive out of an identical 1101 attempted. Every hourly run was
+    re-checking hosts it had checked sixty minutes earlier, and the ~85000 ssh hosts
+    behind the prefix went untouched until the next day's derivation moved them up. Real
+    coverage was 1101 hosts a day rather than a day's worth of hourly runs - a 78-day
+    cycle for ssh against the 3.3 days the hourly cadence was changed to buy, and 23 of
+    every 24 runs doing work that had just been done.
+
+    The timestamp written is "when we last tried this host", which is not quite the
+    `last_seen` the nightly derivation writes ("when we last saw it responsive"). For
+    ordering purposes trying is the more useful of the two - a host that failed its grab
+    should not jump straight back to the front - and the difference is erased at 03:30
+    anyway, when the list is rebuilt from published observations.
+
+    Matching by address rather than by position, and re-reading the file rather than
+    trusting the caller's copy, so a derivation that landed mid-run is not clobbered:
+    anything no longer in the file is simply not reinstated."""
+    if not processed_ips:
+        return False
+    hosts = read_responsive_hosts(path)
+    if not hosts:
+        return False
+    stamp = (now or datetime.now(timezone.utc)).isoformat()
+    done = set(processed_ips)
+    remaining = [(ip, seen) for ip, seen in hosts if ip not in done]
+    rotated = [(ip, stamp) for ip, _ in hosts if ip in done]
+    if not rotated:
+        return False
+    write_responsive_file(path, remaining + rotated)
+    return True
+
+
 def read_responsive_hosts(path: str) -> List[Tuple[str, str]]:
     """Read back `<ip> <last_seen>` pairs, preserving file order (oldest-first).
 

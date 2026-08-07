@@ -67,6 +67,7 @@ from .publish import exclusion_rows
 from .publish import publish_hour
 from .publish import read_pending_datasets
 from .responsive import read_responsive_file
+from .responsive import advance_responsive_cursor
 from .responsive import read_responsive_hosts
 from .responsive import refresh_protocol
 from .ratelimit import TokenBucket
@@ -279,6 +280,9 @@ def cmd_refresh(args: argparse.Namespace) -> int:
         settings.refresh_duration_seconds,
     )
 
+    responsive_path = settings.known_responsive_path.format(protocol=args.protocol)
+    known_hosts = [ip for ip, _ in read_responsive_hosts(responsive_path)]
+
     outcome = run_refresh_scan(
         scan_id=scan_id,
         protocol=args.protocol,
@@ -286,9 +290,7 @@ def cmd_refresh(args: argparse.Namespace) -> int:
         zgrab2_module=entry.zgrab2_module,
         blocklist_path=settings.blocklist_path,
         rate_limiter=rate_limiter,
-        known_hosts=[ip for ip, _ in read_responsive_hosts(
-            settings.known_responsive_path.format(protocol=args.protocol)
-        )],
+        known_hosts=known_hosts,
         version_index=store.version_index,
         user_agent=settings.scan_user_agent,
         concurrency=settings.grab_concurrency,
@@ -296,6 +298,19 @@ def cmd_refresh(args: argparse.Namespace) -> int:
         time_budget_seconds=settings.refresh_duration_seconds or None,
     )
     _write_pending_outcome(settings, outcome)
+
+    # Advance the cursor before anything can exit early. `refresh` walks the list from
+    # the top and stops on its time budget, so without this every hourly run re-reads
+    # the same prefix until `responsive-refresh` rebuilds the file at 03:30 - which is
+    # exactly what production was doing, 23 of every 24 runs re-checking hosts they had
+    # checked an hour earlier. See `advance_responsive_cursor`.
+    covered = outcome.metadata.targets_attempted
+    if advance_responsive_cursor(responsive_path, known_hosts[:covered]):
+        logger.info(
+            "refresh %s: rotated %d checked hosts to the back of %s - next run resumes "
+            "at host %d of %d", scan_id, covered, responsive_path,
+            covered + 1, len(known_hosts),
+        )
 
     logger.info(
         "refresh %s done: %d attempted, %d responsive, %d new fingerprints",
