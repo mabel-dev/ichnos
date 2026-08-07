@@ -121,12 +121,48 @@ def test_a_telnet_banner_full_of_live_state_still_fingerprints_stably():
 def test_telnet_option_negotiation_is_part_of_the_fingerprint():
     """What the server offers to negotiate is a stable property of the implementation,
     and for a host with a bare or empty banner it is the only signal there is."""
-    a = normalize("telnet", _telnet("login:", will=["ECHO", "SUPPRESS_GO_AHEAD"], do=["TERMINAL_TYPE"]))
-    b = normalize("telnet", _telnet("login:", will=["ECHO"], do=[]))
+    a = normalize("telnet", _telnet("login:",
+                                    will=[("Echo", 1), ("Suppress Go Ahead", 3)],
+                                    do=[("Terminal Type", 24)]))
+    b = normalize("telnet", _telnet("login:", will=[("Echo", 1)], do=[]))
 
     assert fingerprint_id(a) != fingerprint_id(b)
     # Sorted, so a server listing the same options in another order is not a change.
-    assert json.loads(a["will_options"]) == ["ECHO", "SUPPRESS_GO_AHEAD"]
+    assert json.loads(a["will_options"]) == ["Echo", "Suppress Go Ahead"]
+
+
+def test_the_real_telehack_option_lists_normalize_rather_than_raising():
+    """The exact `will`/`do` ZGrab2 returned for telehack.com, captured 2026-08-07 - the
+    regression that kept the `telnet` dataset from ever being created. Written out
+    verbatim rather than through `_telnet` so the fixture can never quietly drift back
+    to a shape the scanner does not see."""
+    grab = {"status": "success", "result": {
+        "banner": "\r\nConnected to TELEHACK port 57\r\n",
+        "will": [{"name": "Suppress Go Ahead", "value": 3}, {"name": "Echo", "value": 1}],
+        "do": [{"name": "Terminal Type", "value": 24},
+               {"name": "Negotiate About Window Size", "value": 31},
+               {"name": "Environment Option", "value": 36},
+               {"name": "New Environment Option", "value": 39},
+               {"name": "Binary Transmission", "value": 0}],
+    }}
+
+    payload = normalize("telnet", grab)
+
+    assert json.loads(payload["will_options"]) == ["Echo", "Suppress Go Ahead"]
+    assert json.loads(payload["do_options"])[0] == "Binary Transmission"
+    assert fingerprint_id(payload)
+
+
+def test_an_unnamed_option_still_normalizes():
+    """A code ZGrab2 has no RFC label for must not be able to raise the way the named
+    ones did - `_option_names` is the last thing between a live grab and a lost
+    observation, so it has to be total over whatever shape arrives."""
+    payload = normalize("telnet", {"status": "success", "result": {
+        "banner": "login:", "will": [{"value": 137}], "do": ["Echo"],
+    }})
+
+    assert json.loads(payload["will_options"]) == ["137"]
+    assert json.loads(payload["do_options"]) == ["Echo"]
 
 
 def test_a_missing_banner_normalizes_rather_than_raising():

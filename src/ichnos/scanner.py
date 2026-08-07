@@ -254,8 +254,10 @@ def _grab_and_record(
     record_lock: Optional["threading.Lock"] = None,
 ) -> None:
     """Do one ZGrab2 grab against an already-known-responsive `ip` and record the
-    result - either a successful fingerprint, or (if ZGrab2 couldn't complete its own
-    handshake) a `response_status="grab-failed"` row with no fingerprint.
+    result - a successful fingerprint, a `response_status="grab-failed"` row with no
+    fingerprint (ZGrab2 couldn't complete its own handshake), or a `normalize-failed`
+    one (it could, and we couldn't read the result). Every host that answered gets a
+    row either way; see `_record_grab_result`.
 
     `record_lock` serializes everything *after* the grab when this runs on the worker
     pool (_stream_discover_and_grab). The split is deliberate and is where the whole
@@ -335,11 +337,49 @@ def _record_grab_result(
         return
 
     metadata.hosts_responsive += 1
+    observed_at = clock()
+
     # normalize() dispatches on the zgrab2 *module* ("http"/"tls"), not the schedule's
     # human-facing protocol label ("http"/"https") - they coincide for HTTP but not
     # HTTPS, which is registered under zgrab2_module="tls" (see ScheduleEntry).
-    payload = normalize(zgrab2_module, module_result)
-    fp_id = fingerprint_id(payload)
+    #
+    # Caught, rather than left to the drain thread's blanket handler, because of where
+    # it used to leave us: the Observation was built *after* this call, so a normalizer
+    # that raised took the observation with it and the host vanished from the dataset
+    # entirely - while `hosts_responsive` above had already counted it, so scan_metadata
+    # claimed a responsive host that observations had no row for. That is not
+    # theoretical. `sorted()` over telnet's option list raised on every telnet host that
+    # completed a handshake, from the first production run onwards; the drain logged
+    # `failed to record grab` and carried on, and the visible symptom was not an error
+    # but an absence - a `telnet` dataset that was never created, and telnet
+    # observations that were 100% `grab-failed` because those are the only ones that
+    # never reach a normalizer.
+    #
+    # A host that answered is now recorded whether or not we could read what it said.
+    # `normalize-failed` is deliberately its own status rather than reuse of
+    # `grab-failed`: the grab worked, the bug is ours, and the two need to be tellable
+    # apart in a query - a rising count here is the signal that a normalizer has met a
+    # shape it does not handle, which is precisely what nothing surfaced last time.
+    try:
+        payload = normalize(zgrab2_module, module_result)
+        fp_id = fingerprint_id(payload)
+    except Exception:
+        logger.exception(
+            "scan %s: %s grabbed but %s normalization failed - recording the "
+            "observation without a fingerprint", scan_id, ip, zgrab2_module,
+        )
+        outcome.observations.append(
+            Observation(
+                scan_id=scan_id,
+                observed_at=observed_at,
+                ip=ip,
+                port=port,
+                protocol=protocol,
+                response_status="normalize-failed",
+                fingerprint_id=None,
+            )
+        )
+        return
 
     # No per-host state lookup. This used to read CurrentState to decide whether the
     # host had changed, and only then consult version_index - but that gate was never
@@ -354,7 +394,6 @@ def _record_grab_result(
     # Whether a host changed is still recorded, in the Observation below: every one
     # carries its fingerprint, so drift is a query over observations rather than
     # something the scanner has to remember between runs.
-    observed_at = clock()
     logger.info("scan %s: %s fingerprint=%s", scan_id, ip, fp_id)
     outcome.observations.append(
         Observation(

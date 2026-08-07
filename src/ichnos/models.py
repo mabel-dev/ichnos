@@ -82,11 +82,13 @@ class Observation:
     port: int
     protocol: str
     # "success" (fingerprinted), "grab-failed" (ZMap got a SYN-ACK but ZGrab2 couldn't
-    # complete a grab), or "closed" (ZMap got an RST - host is up, port refused; no
-    # grab is attempted, there's no protocol to speak to).
+    # complete a grab), "closed" (ZMap got an RST - host is up, port refused; no grab
+    # is attempted, there's no protocol to speak to), or "normalize-failed" (the grab
+    # succeeded and our own normalizer raised on it - a bug on this side, not a
+    # property of the host; see _record_grab_result).
     response_status: str
-    # None for "grab-failed"/"closed" - there's no protocol payload to fingerprint, but
-    # the fact that *something* answered on the port is itself worth recording.
+    # None for everything but "success" - there's no protocol payload to fingerprint,
+    # but the fact that *something* answered on the port is itself worth recording.
     fingerprint_id: Optional[str]
 
     def as_dict(self) -> Dict[str, Any]:

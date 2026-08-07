@@ -94,9 +94,17 @@ def fetch_responsive_hosts(
     grouping by `(ip, response_status)` so the feed returns one row per host per outcome.
 
     *Membership* is `success` only, and not merely "we have a row": observations are
-    also written for `closed` (an RST - the host is up but the port is refused) and
-    `grab-failed`. Neither belongs in this list. A closed port is exactly the kind of
-    address discovery should keep sampling, and refresh has nothing to re-grab there.
+    also written for `closed` (an RST - the host is up but the port is refused),
+    `grab-failed`, and `normalize-failed`. None belongs in this list. A closed port is
+    exactly the kind of address discovery should keep sampling, and refresh has nothing
+    to re-grab there.
+
+    `normalize-failed` is the arguable one - that host is live and did speak the
+    protocol, so once the normalizer is fixed it is a host worth refreshing. It stays
+    out anyway: the list drives re-grabs of hosts we hold a fingerprint for, and there
+    is no fingerprint here to compare against. Discovery will re-find it, and if this
+    status is ever common enough for that to matter the answer is to fix the normalizer,
+    not to grow the membership rule.
 
     *Ordering* is the newest observation of any status, which is when we last **tried**
     the host rather than when we last **saw** it. That distinction was a real bug.

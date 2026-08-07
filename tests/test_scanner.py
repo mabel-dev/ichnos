@@ -607,6 +607,80 @@ def test_run_scan_records_grab_failed_when_zgrab2_produces_nothing():
     assert outcome.new_versions == []
 
 
+def test_run_scan_records_a_real_telnet_grab_end_to_end():
+    # The exact ZGrab2 telnet output captured from telehack.com on 2026-08-07, driven
+    # all the way through to a version row. This is the regression that cost the
+    # `telnet` dataset its existence: `will`/`do` are lists of option *objects*, the
+    # normalizer sorted them as if they were strings, and every telnet host that
+    # completed a handshake raised TypeError inside _record_grab_result - taking its
+    # observation with it and leaving telnet with nothing but `grab-failed` rows.
+    zgrab_result = {"data": {"telnet": {"status": "success", "result": {
+        "banner": "\r\nConnected to TELEHACK port 57\r\n",
+        "will": [{"name": "Suppress Go Ahead", "value": 3}, {"name": "Echo", "value": 1}],
+        "do": [{"name": "Terminal Type", "value": 24}, {"name": "Binary Transmission", "value": 0}],
+    }}}}
+
+    def run_command(cmd, input=None):
+        return json.dumps(zgrab_result) + "\n"
+
+    store = InMemoryStore()
+    limiter = TokenBucket(0.001, burst=1)
+
+    outcome = run_scan(
+        scan_id="telnet-test", protocol="telnet", port=23, zgrab2_module="telnet", seed=1,
+        candidate_count=1, blocklist_path="/tmp/x", rate_limiter=limiter,
+        version_index=store.version_index,
+        clock=_fixed_clock(),
+        popen=_fake_popen(["203.0.113.5,synack"], [], grab=run_command),
+    )
+
+    assert outcome.metadata.hosts_responsive == 1
+    assert len(outcome.observations) == 1
+    assert outcome.observations[0].response_status == "success"
+    assert outcome.observations[0].fingerprint_id
+    # The dataset that was never created. `new_versions` is what becomes telnet.ndjson,
+    # and telnet.ndjson is what makes Opteryx create the table.
+    assert len(outcome.new_versions) == 1
+    assert outcome.new_versions[0][0] == "telnet"
+    assert json.loads(outcome.new_versions[0][1].payload["will_options"]) == [
+        "Echo", "Suppress Go Ahead",
+    ]
+
+
+def test_run_scan_records_normalize_failed_rather_than_losing_the_host(monkeypatch):
+    # A normalizer that raises must cost us the fingerprint and nothing else. Before
+    # this, the Observation was built after normalize() returned, so the host was
+    # dropped from the dataset entirely while hosts_responsive had already counted it -
+    # scan_metadata claiming a responsive host that observations had no row for, and no
+    # error visible anywhere except one traceback in the scan log.
+    def exploding_normalize(module, module_result):
+        raise TypeError("'<' not supported between instances of 'dict' and 'dict'")
+
+    monkeypatch.setattr("ichnos.scanner.normalize", exploding_normalize)
+
+    def run_command(cmd, input=None):
+        return json.dumps({"data": {"telnet": {"status": "success", "result": {"banner": "x"}}}}) + "\n"
+
+    store = InMemoryStore()
+    limiter = TokenBucket(0.001, burst=1)
+
+    outcome = run_scan(
+        scan_id="normalize-fail-test", protocol="telnet", port=23, zgrab2_module="telnet",
+        seed=1, candidate_count=1, blocklist_path="/tmp/x", rate_limiter=limiter,
+        version_index=store.version_index,
+        clock=_fixed_clock(),
+        popen=_fake_popen(["203.0.113.5,synack"], [], grab=run_command),
+    )
+
+    assert len(outcome.observations) == 1
+    assert outcome.observations[0].ip == "203.0.113.5"
+    assert outcome.observations[0].response_status == "normalize-failed"
+    assert outcome.observations[0].fingerprint_id is None
+    # Counted responsive *and* present in observations - the two must not disagree.
+    assert outcome.metadata.hosts_responsive == 1
+    assert outcome.new_versions == []
+
+
 def test_run_scan_ignores_unrecognized_classifications():
     def run_command(cmd, input=None):
         raise AssertionError("should never reach zgrab2 for a non-synack line")
