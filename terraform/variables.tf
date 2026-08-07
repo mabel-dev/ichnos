@@ -81,9 +81,9 @@ variable "refresh_rate_per_second" {
 }
 
 variable "refresh_duration_seconds" {
-  description = "Wall-clock budget for one `refresh` run. Makes refresh cost duration x rate rather than scaling with how many hosts discovery has found; coverage becomes a rolling cycle rather than a daily sweep. 0 means unbounded."
+  description = "Wall-clock budget for one `refresh` run. Makes refresh cost duration x rate rather than scaling with how many hosts discovery has found; coverage becomes a rolling cycle rather than a daily sweep. Held under 20 minutes so the three staggered hourly runs (:00/:20/:40 in user_data.sh.tftpl) never overlap each other - grab_concurrency is per process, so concurrent refreshes multiply the worker ceiling, and at 55 minutes they overlapped two and three deep for a measured load average of 50 on two vCPUs. 0 means unbounded."
   type        = number
-  default     = 3300
+  default     = 1100
 }
 
 variable "grab_timeout_seconds" {
@@ -135,14 +135,6 @@ variable "scan_protocol_budgets" {
     175000@64pps the nominal is 2737s and it clears by ~335s. Cutting candidates and
     rate together changes only how much work happens inside an unchanged window, which
     is not what was short.
-
-    Historic note, since it was got wrong twice: Refresh does not cost the three
-    protocols equally - measured at +23s for http, +38s for https and +349s for ssh -
-    and ssh was already the tightest, so with refresh running hourly it would breach the
-    window every hour. Cutting its candidates while holding the rate at 80pps is what
-    buys margin: dropping both together keeps the nominal pinned at 3128s and changes
-    nothing. At 200000@80pps the nominal is 2503s, so even ssh's worst measured overrun
-    plus refresh lands near 3000s.
 
     650000 was tried and is too much. It was sized by scaling that 40% linearly to an
     expected 65%; measured, it ran at 91.4% average and 96.1% peak, and every run
