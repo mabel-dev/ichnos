@@ -223,10 +223,147 @@ def normalize_ssh(ssh_result: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+_DIGIT_RUN_RE = re.compile(r"\d{2,}")
+_REPLY_CODE_PREFIX_RE = re.compile(r"^\d{3}[-\s]?")
+_OPAQUE_TOKEN_RE = re.compile(r"\b(?=[A-Za-z0-9]{8,}\b)(?=[A-Za-z0-9]*\d)[A-Za-z0-9]+\b")
+
+
+def _mask_volatile(text: str) -> str:
+    """Two masks, in order, over one line of banner text.
+
+    `_OPAQUE_TOKEN_RE` goes first and catches per-session identifiers - eight or more
+    alphanumerics with at least one digit somewhere in them, which is the shape of
+    `d9443c01a7336` in a real Gmail greeting and is not the shape of any software name.
+    It has to run before the digit mask, because the digit mask would otherwise chew a
+    session ID into fragments (`d#c#a#-#d8f9a4dsi`) that are still volatile but no
+    longer look like one token.
+
+    `_DIGIT_RUN_RE` then takes the rest: clocks, years, counters, port numbers, sizes.
+    Software versions survive because they are conventionally single digits per
+    component - `vsftpd 3.0.3`, `Exim 4.94`, `Pure-FTPd` all pass through untouched."""
+    return _DIGIT_RUN_RE.sub("#", _OPAQUE_TOKEN_RE.sub("#", text))
+
+
+def _stable_banner(raw: Optional[str]) -> Optional[str]:
+    """A banner reduced to the part that describes the *service* rather than the
+    *connection*, so it can be fingerprinted without churning on every scan.
+
+    Banner protocols put live state in their greeting, which the header-based protocols
+    mostly do not. Confirmed against real grabs from this scanner:
+
+        ftp     220-You are user number 14 of 1000 allowed.
+                220-Local time is now 22:24. Server port: 21.
+        telnet  It is 12:25 pm on Friday, August 7, 2026 in Mountain View, California.
+                There are 131 local users. There are 26649 hosts on the network.
+        smtp    220 mx.google.com ESMTP d9443c01a7336-2913d8f9a4dsi ... - gsmtp
+
+    Fingerprinted verbatim, every one of those produces a different fingerprint on every
+    single scan of a completely unchanged host - and therefore a new `versions` row every
+    time. That is not a hypothetical failure mode for this project: it is exactly what
+    the `date` HTTP header did before `_VOLATILE_HEADER_KEYS` existed, one real host
+    generating dozens of spurious versions in a few hours.
+
+    Two reductions, in order:
+
+    1. The first non-empty line only. Multi-line greetings put identity on the opening
+       line and chat on the continuations - the counters and clocks above are all on
+       continuation lines.
+    2. The leading reply code stripped (it is carried separately as `reply_code`), then
+       session identifiers and multi-digit runs masked - see `_mask_volatile`. These are
+       heuristics and deliberately blunt ones: the cost of masking a genuine multi-digit
+       version is one merged fingerprint, the cost of missing a volatile field is an
+       unbounded stream of junk version rows.
+
+    The raw banner is not kept alongside it. `normalize()`'s return value is both the
+    published payload and the fingerprint input - there is no separate channel for
+    "record this but do not hash it" - so anything preserved here is hashed here.
+    """
+    if not raw:
+        return None
+    first = next((line for line in raw.splitlines() if line.strip()), "")
+    first = _REPLY_CODE_PREFIX_RE.sub("", first.strip())
+    if not first:
+        return None
+    return _mask_volatile(first)
+
+
+def _reply_code(raw: Optional[str]) -> Optional[int]:
+    """The leading 3-digit reply code FTP and SMTP greet with (220 ready, 421 service
+    unavailable, 554 rejected). Read off the raw banner before `_stable_banner` masks it
+    - it is a multi-digit run, but a fixed-vocabulary one that says something real about
+    the service, unlike the session IDs the mask exists for."""
+    if not raw:
+        return None
+    first = next((line for line in raw.splitlines() if line.strip()), "")
+    head = first.strip()[:3]
+    return int(head) if head.isdigit() else None
+
+
+def normalize_ftp(ftp_result: Dict[str, Any]) -> Dict[str, Any]:
+    """`ftp_result` is the `data.ftp` object from one ZGrab2 ftp-module result line.
+
+    ZGrab2's ftp module returns a single `banner` and nothing else (confirmed against
+    real grabs), so the whole fingerprint rests on it - which is why the volatility
+    handling in `_stable_banner` matters more here than it does for SSH, whose banner is
+    a fixed `SSH-2.0-<software>` string."""
+    return {
+        "banner": _stable_banner(_get(ftp_result, "result", "banner")),
+        "reply_code": _reply_code(_get(ftp_result, "result", "banner")),
+    }
+
+
+def normalize_telnet(telnet_result: Dict[str, Any]) -> Dict[str, Any]:
+    """`telnet_result` is the `data.telnet` object from one ZGrab2 telnet-module line.
+
+    The most volatile of the three by a distance - telnet greetings are written for a
+    human sitting at a terminal, so live clocks, session counters and MOTD text are
+    normal rather than exceptional. `_stable_banner` is doing real work here and it will
+    not catch everything; a telnet host whose greeting rotates a quote of the day will
+    still churn. Watch the `telnet` versions row count against its observation count
+    over the first few hours, and tighten the reduction if the ratio is not close to the
+    ratio the other protocols show."""
+    return {
+        "banner": _stable_banner(_get(telnet_result, "result", "banner")),
+        "will_options": json.dumps(sorted(_get(telnet_result, "result", "will") or []),
+                                   sort_keys=True),
+        "do_options": json.dumps(sorted(_get(telnet_result, "result", "do") or []),
+                                 sort_keys=True),
+    }
+
+
+def normalize_smtp(smtp_result: Dict[str, Any]) -> Dict[str, Any]:
+    """`smtp_result` is the `data.smtp` object from one ZGrab2 smtp-module result line.
+
+    Real grabs return `banner` plus exactly one of `ehlo` or `helo` - the server's
+    response to the greeting ZGrab2 sends, and the more useful of the two fields: the
+    EHLO response is the capability list (STARTTLS, SIZE, AUTH mechanisms, PIPELINING),
+    which is a genuine description of the service rather than a vendor string. It gets
+    the same reduction as the banner but line-by-line rather than first-line-only, since
+    here every line is a distinct capability rather than continuation chat, and it is
+    sorted so a server that reorders its advertisement does not read as a change.
+    """
+    banner = _get(smtp_result, "result", "banner")
+    greeting = _get(smtp_result, "result", "ehlo") or _get(smtp_result, "result", "helo")
+    capabilities = sorted(
+        _mask_volatile(_REPLY_CODE_PREFIX_RE.sub("", line.strip()))
+        for line in (greeting or "").splitlines()
+        if line.strip()
+    )
+    return {
+        "banner": _stable_banner(banner),
+        "reply_code": _reply_code(banner),
+        "capabilities": json.dumps(capabilities, sort_keys=True),
+        "extended": bool(_get(smtp_result, "result", "ehlo")),
+    }
+
+
 NORMALIZERS = {
     "http": normalize_http,
     "tls": normalize_tls,
     "ssh": normalize_ssh,
+    "ftp": normalize_ftp,
+    "telnet": normalize_telnet,
+    "smtp": normalize_smtp,
 }
 
 

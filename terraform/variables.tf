@@ -159,15 +159,40 @@ variable "scan_protocol_budgets" {
     a 0.75% hit rate against http's 1.51% and https's 1.66%, so it buys the most
     coverage per unit of grab work. If runs do start drifting past 3128s, ssh is also
     the first place to trim for the same reason.
+
+    `minute` is the cron minute the protocol's run starts at, and it exists because
+    the banner protocols cannot simply join the others at :06. The original three run
+    concurrently and that is proven; a fourth concurrent ZMap is not. An ad-hoc fourth
+    invocation on this box stalled on what looked like raw-socket/pcap contention -
+    the same failure mode git history already blames for a run that reported 1600
+    attempted, 0 responsive in 20ms - so six at once is not something to find out
+    about in production.
+
+    ftp/telnet/smtp are therefore sized to be short rather than to fill the hour, and
+    slotted so they never overlap each other: 25000 at 32pps is a 784s nominal (13.1
+    minutes), and :10/:30/:50 leaves 6.9 minutes of clearance between consecutive
+    runs. At most four ZMaps are ever live - the three long-running ones plus exactly
+    one banner protocol. 32pps is not an aggressive rate here; it is what all three of
+    the original protocols ran at before they were sized individually.
+
+    Total is 525000/hour, of which the new protocols are 75000. They are deliberately
+    the smallest budgets in the map: nothing is known yet about their hit rates, and a
+    banner protocol's grab is cheap but its *fingerprint* is not proven stable (see
+    normalize.py's `_stable_banner`). Raise them once the versions-row count per
+    observation looks like the other protocols' rather than before.
   EOT
   type = map(object({
     candidates = number
     rate_pps   = number
+    minute     = number
   }))
   default = {
-    http  = { candidates = 150000, rate_pps = 48 }
-    https = { candidates = 125000, rate_pps = 40 }
-    ssh   = { candidates = 175000, rate_pps = 64 }
+    http   = { candidates = 150000, rate_pps = 48, minute = 6 }
+    https  = { candidates = 125000, rate_pps = 40, minute = 6 }
+    ssh    = { candidates = 175000, rate_pps = 64, minute = 6 }
+    ftp    = { candidates = 25000, rate_pps = 32, minute = 10 }
+    telnet = { candidates = 25000, rate_pps = 32, minute = 30 }
+    smtp   = { candidates = 25000, rate_pps = 32, minute = 50 }
   }
 }
 

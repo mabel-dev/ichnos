@@ -119,6 +119,30 @@ SCHEMAS: Dict[str, Dict[str, str]] = {
         "fingerprint_id": "string",
         "first_seen": "timestamp",
     },
+    # The banner protocols. `banner` here is the reduced form normalize.py produces,
+    # not the wire bytes - see `_stable_banner` for why keeping the raw greeting would
+    # make these datasets churn a new version row per scan.
+    "ftp": {
+        "banner": "string",
+        "reply_code": "int64",
+        "fingerprint_id": "string",
+        "first_seen": "timestamp",
+    },
+    "telnet": {
+        "banner": "string",
+        "will_options": "string",
+        "do_options": "string",
+        "fingerprint_id": "string",
+        "first_seen": "timestamp",
+    },
+    "smtp": {
+        "banner": "string",
+        "reply_code": "int64",
+        "capabilities": "string",
+        "extended": "bool",
+        "fingerprint_id": "string",
+        "first_seen": "timestamp",
+    },
 }
 
 

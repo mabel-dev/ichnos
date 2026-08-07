@@ -183,6 +183,14 @@ if store.schedule.get("https") is None:
     store.schedule.put(ScheduleEntry(protocol="https", port=443, zgrab2_module="tls", cadence="daily"))
 if store.schedule.get("ssh") is None:
     store.schedule.put(ScheduleEntry(protocol="ssh", port=22, zgrab2_module="ssh", cadence="daily"))
+# The banner protocols. Same protocol label as zgrab2 module for all three, unlike
+# https/tls - no reason to differ, these are not fronted by another protocol's name.
+if store.schedule.get("ftp") is None:
+    store.schedule.put(ScheduleEntry(protocol="ftp", port=21, zgrab2_module="ftp", cadence="daily"))
+if store.schedule.get("telnet") is None:
+    store.schedule.put(ScheduleEntry(protocol="telnet", port=23, zgrab2_module="telnet", cadence="daily"))
+if store.schedule.get("smtp") is None:
+    store.schedule.put(ScheduleEntry(protocol="smtp", port=25, zgrab2_module="smtp", cadence="daily"))
 PYEOF
 
 # --- Jurisdiction blocklist: refresh once now so scanning never starts with an empty
@@ -369,10 +377,16 @@ systemctl enable --now ichnos-web
 # cycle. That matters more than it used to: cmd_scan writes to pending_dir only after
 # the run returns, so everything an hour-long run found exists nowhere durable until
 # it finishes, and shortening the gap between "finished" and "published" is the
-# cheapest way to narrow that exposure without restructuring the writer. ---
+# cheapest way to narrow that exposure without restructuring the writer.
+#
+# The banner protocols (ftp/telnet/smtp) do not start at :06 with the others - they run
+# at :10/:30/:50 on short 784s budgets so they never overlap each other. Three
+# concurrent ZMaps is proven on this box; a fourth is not, and an ad-hoc fourth
+# invocation stalled on what looked like raw-socket contention. This caps concurrent
+# ZMaps at four rather than six. See scan_protocol_budgets' `minute`. ---
 cat > /etc/cron.d/ichnos <<CRONEOF
 %{ for proto, budget in scan_protocol_budgets ~}
-6 * * * * root flock -n /var/lock/ichnos-scan-${proto}.lock bash -c 'set -a; . /etc/ichnos/env; set +a; /opt/ichnos-venv/bin/ichnos scan --protocol ${proto} --candidates ${budget.candidates} --rate-pps ${budget.rate_pps} --store dynamodb >> /var/log/ichnos/scan-${proto}.log 2>&1'
+${budget.minute} * * * * root flock -n /var/lock/ichnos-scan-${proto}.lock bash -c 'set -a; . /etc/ichnos/env; set +a; /opt/ichnos-venv/bin/ichnos scan --protocol ${proto} --candidates ${budget.candidates} --rate-pps ${budget.rate_pps} --store dynamodb >> /var/log/ichnos/scan-${proto}.log 2>&1'
 %{ endfor ~}
 0 * * * * root flock -n /var/lock/ichnos-refresh-http.lock bash -c 'set -a; . /etc/ichnos/env; set +a; /opt/ichnos-venv/bin/ichnos refresh --protocol http --store dynamodb >> /var/log/ichnos/refresh-http.log 2>&1'
 20 * * * * root flock -n /var/lock/ichnos-refresh-https.lock bash -c 'set -a; . /etc/ichnos/env; set +a; /opt/ichnos-venv/bin/ichnos refresh --protocol https --store dynamodb >> /var/log/ichnos/refresh-https.log 2>&1'
