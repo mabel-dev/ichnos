@@ -117,11 +117,32 @@ variable "scan_protocol_budgets" {
     take 4690s against a 3600s hour and lose every other run - which is why the higher
     candidate counts carry the higher rate rather than sharing one.
 
+    Total is 450000/hour, unchanged - this is a redistribution, not an increase. The
+    three protocols overrun very differently at equal budgets (measured +59s, +75s and
+    +204s at 125k/125k/200k), so the candidates move toward the ones with margin.
+
     Sized against measured CPU rather than the hour, because CPU is what binds now -
     the grab pool sits at 12-18% utilisation and every protocol has 472s of buffer.
     Five hours on c6g.large at 400000 candidates/hour, 15 runs, zero skipped ticks and
     durations of 3134-3163s against a predicted 3128s, measured ~40% of 2 vCPU during
     active runs with peaks of 49.5%.
+
+    ssh is sized shorter than the others on purpose, and its rate is held up rather
+    than scaled down with its candidate count. Refresh does not cost the three
+    protocols equally - measured at +23s for http, +38s for https and +349s for ssh -
+    and with refresh hourly that lands every hour rather than once a day. At
+    175000@56pps the nominal stays 3128s and ssh breaches by ~56s every hour; at
+    175000@64pps the nominal is 2737s and it clears by ~335s. Cutting candidates and
+    rate together changes only how much work happens inside an unchanged window, which
+    is not what was short.
+
+    Historic note, since it was got wrong twice: Refresh does not cost the three
+    protocols equally - measured at +23s for http, +38s for https and +349s for ssh -
+    and ssh was already the tightest, so with refresh running hourly it would breach the
+    window every hour. Cutting its candidates while holding the rate at 80pps is what
+    buys margin: dropping both together keeps the nominal pinned at 3128s and changes
+    nothing. At 200000@80pps the nominal is 2503s, so even ssh's worst measured overrun
+    plus refresh lands near 3000s.
 
     650000 was tried and is too much. It was sized by scaling that 40% linearly to an
     expected 65%; measured, it ran at 91.4% average and 96.1% peak, and every run
@@ -152,9 +173,9 @@ variable "scan_protocol_budgets" {
     rate_pps   = number
   }))
   default = {
-    http  = { candidates = 125000, rate_pps = 40 }
+    http  = { candidates = 150000, rate_pps = 48 }
     https = { candidates = 125000, rate_pps = 40 }
-    ssh   = { candidates = 200000, rate_pps = 64 }
+    ssh   = { candidates = 175000, rate_pps = 64 }
   }
 }
 

@@ -330,7 +330,7 @@ systemctl daemon-reload
 systemctl enable --now ichnos-web
 
 # --- cron: scan (discovery, hourly, one process per protocol), refresh
-# (re-check known-responsive hosts, daily), responsive-refresh (rebuild that
+# (re-check known-responsive hosts, hourly - see below), responsive-refresh (rebuild that
 # known-responsive list from published Observations, daily at 03:30 - deliberately
 # ahead of the 04:00 refresh that consumes it), publish hourly, jurisdiction-refresh
 # weekly, certbot retry/renewal every 30 min (see note above).
@@ -341,8 +341,15 @@ systemctl enable --now ichnos-web
 # instead of running concurrently with the still-active one, which would otherwise
 # silently double the effective scan rate for that protocol. -n means "skip, don't
 # queue" - a missed tick is fine, a doubled rate isn't. refresh gets the same flock
-# guard for consistency, even though at current known-host volumes it finishes in
-# minutes, well inside its own daily window.
+# guard for consistency, and it now matters: refresh runs hourly with a 55-minute
+# budget, so a run that somehow outlasts its budget must skip rather than stack.
+#
+# Hourly, not daily, because refresh's cost is fixed by its budget rather than by how
+# many hosts exist, and once daily it was reaching under 2% of the known set per run -
+# a full cycle measured in months while discovery adds tens of thousands of hosts a
+# day. Hourly turns that into roughly two days. It starts at :00 and the scans at :06,
+# so they overlap by design; the scan budgets are sized for that overlap rather than
+# pretending it is not there.
 #
 # Scans start at :06 rather than :00, which is about where the results land rather
 # than about the scanning. A run takes ~3253s, so starting at :06 it finishes around
@@ -356,9 +363,9 @@ cat > /etc/cron.d/ichnos <<CRONEOF
 %{ for proto, budget in scan_protocol_budgets ~}
 6 * * * * root flock -n /var/lock/ichnos-scan-${proto}.lock bash -c 'set -a; . /etc/ichnos/env; set +a; /opt/ichnos-venv/bin/ichnos scan --protocol ${proto} --candidates ${budget.candidates} --rate-pps ${budget.rate_pps} --store dynamodb >> /var/log/ichnos/scan-${proto}.log 2>&1'
 %{ endfor ~}
-0 4 * * * root flock -n /var/lock/ichnos-refresh-http.lock bash -c 'set -a; . /etc/ichnos/env; set +a; /opt/ichnos-venv/bin/ichnos refresh --protocol http --store dynamodb >> /var/log/ichnos/refresh-http.log 2>&1'
-0 4 * * * root flock -n /var/lock/ichnos-refresh-https.lock bash -c 'set -a; . /etc/ichnos/env; set +a; /opt/ichnos-venv/bin/ichnos refresh --protocol https --store dynamodb >> /var/log/ichnos/refresh-https.log 2>&1'
-0 4 * * * root flock -n /var/lock/ichnos-refresh-ssh.lock bash -c 'set -a; . /etc/ichnos/env; set +a; /opt/ichnos-venv/bin/ichnos refresh --protocol ssh --store dynamodb >> /var/log/ichnos/refresh-ssh.log 2>&1'
+0 * * * * root flock -n /var/lock/ichnos-refresh-http.lock bash -c 'set -a; . /etc/ichnos/env; set +a; /opt/ichnos-venv/bin/ichnos refresh --protocol http --store dynamodb >> /var/log/ichnos/refresh-http.log 2>&1'
+0 * * * * root flock -n /var/lock/ichnos-refresh-https.lock bash -c 'set -a; . /etc/ichnos/env; set +a; /opt/ichnos-venv/bin/ichnos refresh --protocol https --store dynamodb >> /var/log/ichnos/refresh-https.log 2>&1'
+0 * * * * root flock -n /var/lock/ichnos-refresh-ssh.lock bash -c 'set -a; . /etc/ichnos/env; set +a; /opt/ichnos-venv/bin/ichnos refresh --protocol ssh --store dynamodb >> /var/log/ichnos/refresh-ssh.log 2>&1'
 30 3 * * * root flock -n /var/lock/ichnos-responsive.lock bash -c 'set -a; . /etc/ichnos/env; set +a; /opt/ichnos-venv/bin/ichnos responsive-refresh --store dynamodb >> /var/log/ichnos/responsive.log 2>&1'
 5 * * * * root set -a; . /etc/ichnos/env; set +a; /opt/ichnos-venv/bin/ichnos publish >> /var/log/ichnos/publish.log 2>&1
 0 3 * * 0 root set -a; . /etc/ichnos/env; set +a; /opt/ichnos-venv/bin/ichnos jurisdiction-refresh --source rir --countries "${jurisdiction_countries}" >> /var/log/ichnos/jurisdiction.log 2>&1
