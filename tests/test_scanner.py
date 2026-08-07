@@ -88,11 +88,13 @@ class _FakeGrabProcess:
     only when it dies mid-stream; it is reconciled to `grab-failed` at close.
     `exit_code` simulates exactly that death."""
 
-    def __init__(self, cmd, grab, *, exit_code=0):
+    def __init__(self, cmd, grab, *, exit_code=0, delay=0):
         import queue
 
         self.cmd = cmd
         self._grab = grab
+        self._delay = delay
+        self._workers = []
         self._queue = queue.Queue()
         self.stdin = _FakeGrabStdin(self)
         self.stdout = self._lines()
@@ -105,6 +107,24 @@ class _FakeGrabProcess:
         self.submitted.append(ip)
         if self._grab is None:
             raise AssertionError(f"unexpected zgrab2 grab for {ip}")
+        if self._delay:
+            # A grab still in flight when stdin closes. Real ZGrab2 works through its
+            # queue after we stop feeding it, and `close()` has to wait for that;
+            # producing every result synchronously on the submitting thread would leave
+            # nothing outstanding and quietly make that wait untestable.
+            import threading as _t
+
+            worker = _t.Thread(target=self._produce, args=(ip,), daemon=True)
+            self._workers.append(worker)
+            worker.start()
+            return
+        self._produce(ip)
+
+    def _produce(self, ip):
+        if self._delay:
+            import threading as _t
+
+            _t.Event().wait(self._delay)
         output = self._grab(self.cmd, f"{ip}\n")
         for line in (output or "").splitlines():
             if not line.strip():
@@ -116,6 +136,8 @@ class _FakeGrabProcess:
             self._queue.put(json.dumps(record))
 
     def finish(self):
+        for worker in self._workers:
+            worker.join(timeout=5)
         self._queue.put(None)
 
     def _lines(self):
@@ -137,7 +159,7 @@ class _FakeGrabProcess:
         return self.wait()
 
 
-def _fake_popen(lines, calls, *, grab=None, grab_exit_code=0, **kwargs):
+def _fake_popen(lines, calls, *, grab=None, grab_exit_code=0, grab_delay=0, **kwargs):
     """One factory standing in for both processes a run now spawns. Dispatches on the
     binary name because the streaming rewrite means a discovery run holds a ZMap *and* a
     ZGrab2 open at once, rather than forking a fresh ZGrab2 per responsive host."""
@@ -146,7 +168,7 @@ def _fake_popen(lines, calls, *, grab=None, grab_exit_code=0, **kwargs):
     def popen(cmd, **_):
         calls.append(cmd)
         if cmd[0] == "zgrab2":
-            proc = _FakeGrabProcess(cmd, grab, exit_code=grab_exit_code)
+            proc = _FakeGrabProcess(cmd, grab, exit_code=grab_exit_code, delay=grab_delay)
             grabbers.append(proc)
             return proc
         proc = _FakeProcess(lines, **kwargs)
@@ -1013,30 +1035,31 @@ def test_every_grab_is_recorded_and_counted_under_concurrency():
 
 
 def test_run_does_not_return_until_outstanding_grabs_have_finished():
-    """ZMap's stdout EOFs well before a slow grab completes. If the run returned then,
+    """ZMap's stdout EOFs well before a slow grab completes, and ZGrab2 keeps working
+    through its queue after we stop feeding it. If the run returned at either point,
     cmd_scan would write pending rows that omit hosts still being grabbed - silent loss
-    that looks exactly like a host that never answered."""
-    import threading as _t
+    that looks exactly like a host that never answered.
 
-    started = _t.Event()
-
-    def run_command(cmd, input=None):
-        started.set()
-        _t.Event().wait(0.3)  # outlives the stdout iterator by a wide margin
-        return _grab_stdout()
-
+    `grab_delay` is what makes this a real test rather than a tautology: the results are
+    produced off the submitting thread and arrive strictly after stdin has closed, so
+    the only way all three are present is if `close()` actually waited for them."""
     store = InMemoryStore()
     outcome = run_scan(
         scan_id="http-drain", protocol="http", port=80, zgrab2_module="http", seed=1,
-        candidate_count=1, blocklist_path="/tmp/x",
+        candidate_count=3, blocklist_path="/tmp/x",
         rate_limiter=TokenBucket(0.001, burst=1),
         version_index=store.version_index, clock=_fixed_clock(),
-        popen=_fake_popen(["203.0.113.7,synack"], [], grab=run_command), grab_concurrency=4,
+        popen=_fake_popen(
+            [f"203.0.113.{i},synack" for i in (7, 8, 9)], [],
+            grab=lambda cmd, ip: _grab_stdout(server=f"srv-{ip.strip()}"),
+            grab_delay=0.3,  # outlives the stdout iterator by a wide margin
+        ),
+        grab_concurrency=4,
     )
 
-    assert started.is_set()
-    assert len(outcome.observations) == 1  # recorded before run_scan returned
-    assert outcome.observations[0].response_status == "success"
+    # All recorded before run_scan returned, none reconciled away as grab-failed.
+    assert len(outcome.observations) == 3
+    assert {o.response_status for o in outcome.observations} == {"success"}
 
 
 def test_a_failure_recording_one_grab_does_not_stop_the_rest(caplog):
