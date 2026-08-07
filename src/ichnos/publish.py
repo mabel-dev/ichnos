@@ -139,7 +139,7 @@ SCHEMAS: Dict[str, Dict[str, str]] = {
         "banner": "string",
         "reply_code": "int64",
         "capabilities": "string",
-        "extended": "bool",
+        "extended": "boolean",
         "fingerprint_id": "string",
         "first_seen": "timestamp",
     },
