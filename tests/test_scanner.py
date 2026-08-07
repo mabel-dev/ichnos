@@ -94,7 +94,9 @@ class _FakeGrabProcess:
         self.cmd = cmd
         self._grab = grab
         self._delay = delay
-        self._workers = []
+        self._outstanding = 0
+        self._finishing = False
+        self._state_lock = __import__("threading").Lock()
         self._queue = queue.Queue()
         self.stdin = _FakeGrabStdin(self)
         self.stdout = self._lines()
@@ -114,9 +116,9 @@ class _FakeGrabProcess:
             # nothing outstanding and quietly make that wait untestable.
             import threading as _t
 
-            worker = _t.Thread(target=self._produce, args=(ip,), daemon=True)
-            self._workers.append(worker)
-            worker.start()
+            with self._state_lock:
+                self._outstanding += 1
+            _t.Thread(target=self._produce, args=(ip,), daemon=True).start()
             return
         self._produce(ip)
 
@@ -134,11 +136,23 @@ class _FakeGrabProcess:
             # omit it just saves repeating the address it already keyed the result by.
             record.setdefault("ip", ip)
             self._queue.put(json.dumps(record))
+        if self._delay:
+            with self._state_lock:
+                self._outstanding -= 1
+                done = self._finishing and self._outstanding == 0
+            if done:
+                self._queue.put(None)
 
     def finish(self):
-        for worker in self._workers:
-            worker.join(timeout=5)
-        self._queue.put(None)
+        # Returns immediately, exactly as closing the real process's stdin does. Stdout
+        # closes when the last in-flight target completes, not when input stops - if
+        # this waited here instead, it would be the fixture doing the draining and
+        # `close()`'s own wait would never be tested.
+        with self._state_lock:
+            self._finishing = True
+            done = self._outstanding == 0
+        if done:
+            self._queue.put(None)
 
     def _lines(self):
         while True:
@@ -148,8 +162,10 @@ class _FakeGrabProcess:
             yield item
 
     def kill(self):
+        # Killing the process closes stdout there and then, in-flight targets or not -
+        # unlike closing stdin, which lets them finish.
         self.killed = True
-        self.finish()
+        self._queue.put(None)
 
     def wait(self, timeout=None):
         self.returncode = self._exit_code
