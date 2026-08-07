@@ -35,6 +35,7 @@ something this module manages, that's a deployment/AMI concern.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import tempfile
 import threading
@@ -417,6 +418,20 @@ def _stream_discover_and_grab(
         "--output-filter", "repeat = 0",
         "--cooldown-time", str(cooldown_seconds),
     ]
+    # ZMap's own end-of-run JSON summary. Written per run and read back below purely to
+    # log it: it reports what ZMap sent and received, which is the only place the
+    # difference between "no host answered" and "responses arrived and were filtered
+    # out" is visible from here.
+    #
+    # That distinction is currently unresolved and matters: the reader has a branch for
+    # `classification == "rst"` recording response_status="closed", the --output-filter
+    # override exists precisely to stop ZMap's default `success = 1` discarding resets,
+    # and across 429,936 published observations there is not one `closed` row. A query
+    # for "hosts that were up with the port closed" therefore returns an empty set that
+    # reads as an answer rather than an absence.
+    metadata_file = tempfile.NamedTemporaryFile(mode="r", suffix=".json", delete=False)
+    metadata_file.close()
+    cmd.extend(["--metadata-file", metadata_file.name])
     if gateway_mac:
         cmd.extend(["--gateway-mac", gateway_mac])
 
@@ -523,6 +538,26 @@ def _stream_discover_and_grab(
             )
             proc.kill()
             proc.wait()
+
+        # Logged on success as well as failure - the counts are the diagnostic, and
+        # discarding them on the runs that worked is what left the RST question open.
+        try:
+            with open(metadata_file.name) as f:
+                summary = json.load(f)
+            interesting = {
+                k: summary.get(k)
+                for k in ("sent", "received", "first_scanned", "blocklisted",
+                          "app_success_unique", "success_total", "failure_total")
+                if summary.get(k) is not None
+            }
+            logger.info("scan %s: zmap summary %s", scan_id, interesting or summary)
+        except Exception as exc:
+            logger.warning("scan %s: could not read zmap metadata file: %s", scan_id, exc)
+        finally:
+            try:
+                os.unlink(metadata_file.name)
+            except OSError:
+                pass
 
         if proc.returncode != 0:
             stderr_file.seek(0)
