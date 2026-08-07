@@ -90,8 +90,13 @@ def fetch_responsive_hosts(
     """(ip, last_attempt) for every host that answered `protocol` within the window,
     least-recently-attempted first.
 
-    Membership and ordering are two different questions and this asks both in one query,
-    grouping by `(ip, response_status)` so the feed returns one row per host per outcome.
+    Membership and ordering are two different questions, asked as two queries because
+    one query cannot be read safely. Grouping by `(ip, response_status)` answers both at
+    once and is the better statement, but it returns a row per host *per outcome* - over
+    100000 rows for http and https, which is the ceiling on a single page, and this feed
+    cannot be paged without silently duplicating and dropping rows (see odata.MAX_TOP).
+    Split by status, each half fits: the success half is exactly the membership set, and
+    the non-success half only has to carry timestamps for hosts already in it.
 
     *Membership* is `success` only, and not merely "we have a row": observations are
     also written for `closed` (an RST - the host is up but the port is refused),
@@ -125,30 +130,31 @@ def fetch_responsive_hosts(
     data pipeline rather than through a table maintained on the side.
     """
     now = now or datetime.now(timezone.utc)
-    where = (
+    scoped = (
         f"protocol eq '{protocol}' "
         f"and observed_at ge {window_start(now, window_days)}"
     )
-    kwargs = {"where": where, "token": token, "get": get}
-    if base_url:
-        kwargs["base_url"] = base_url
-    rows = grouped_max(
-        f"{workspace}/{collection}/{OBSERVATIONS_DATASET}",
-        ("ip", "response_status"), "observed_at", "last_at", **kwargs
-    )
+    dataset = f"{workspace}/{collection}/{OBSERVATIONS_DATASET}"
 
-    responsive = set()
-    last_attempt: dict = {}
-    for row in rows:
-        ip = row["ip"]
-        stamp = row.get("last_at") or ""
-        if row.get("response_status") == SUCCESS_STATUS:
-            responsive.add(ip)
-        if stamp > last_attempt.get(ip, ""):
-            last_attempt[ip] = stamp
+    def newest_per_ip(status_clause: str) -> dict:
+        kwargs = {"where": f"{scoped} and {status_clause}", "token": token, "get": get}
+        if base_url:
+            kwargs["base_url"] = base_url
+        rows = grouped_max(dataset, "ip", "observed_at", "last_at", **kwargs)
+        return {r["ip"]: (r.get("last_at") or "") for r in rows}
+
+    # `ne` rather than enumerating the failure statuses: `closed` and `grab-failed` are
+    # the two that exist today, and a status added later must count as an attempt
+    # without anyone having to remember to add it here.
+    last_success = newest_per_ip(f"response_status eq '{SUCCESS_STATUS}'")
+    last_failure = newest_per_ip(f"response_status ne '{SUCCESS_STATUS}'")
 
     return sorted(
-        ((ip, last_attempt.get(ip, "")) for ip in responsive), key=lambda pair: pair[1]
+        (
+            (ip, max(seen, last_failure.get(ip, "")))
+            for ip, seen in last_success.items()
+        ),
+        key=lambda pair: pair[1],
     )
 
 
