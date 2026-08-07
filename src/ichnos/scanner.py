@@ -39,7 +39,6 @@ import os
 import subprocess
 import tempfile
 import threading
-from concurrent.futures import ThreadPoolExecutor
 from time import monotonic
 from dataclasses import dataclass
 from dataclasses import field
@@ -169,14 +168,7 @@ def grab_one(
     string lives in config.py rather than being duplicated here, and `cli.py` always
     supplies it on the real path."""
     cmd = ["zgrab2", module, "--port", str(port), "--blocklist-file", blocklist_path]
-    if user_agent and module == "http":
-        # http-module-only, deliberately: --user-agent is a flag on ZGrab2's http
-        # module, not a global one. Passing it to `zgrab2 tls` or `zgrab2 ssh` is an
-        # unknown-flag error, so the process exits non-zero having produced nothing -
-        # which this function cannot distinguish from a target that simply didn't
-        # answer. Getting this wrong would silently turn every HTTPS and SSH grab
-        # into a "grab-failed" row rather than failing loudly.
-        cmd.extend(["--user-agent", user_agent])
+    cmd.extend(_user_agent_args(module, user_agent))
     output = run_command(cmd, f"{ip}\n")
     line = output.strip().splitlines()[0] if output.strip() else ""
     if not line:
@@ -185,7 +177,54 @@ def grab_one(
         record = json.loads(line)
     except json.JSONDecodeError:
         return None
-    return record.get("data", {}).get(module)
+    return successful_module_result(record, module)
+
+
+def _user_agent_args(module: str, user_agent: Optional[str]) -> List[str]:
+    """http-module-only, deliberately: `--user-agent` is a flag on ZGrab2's http module,
+    not a global one. Passing it to `zgrab2 tls` or `zgrab2 ssh` is an unknown-flag
+    error, so the process exits non-zero having produced nothing - indistinguishable
+    from a target that simply didn't answer. Getting this wrong would silently turn
+    every HTTPS and SSH grab into a "grab-failed" row rather than failing loudly."""
+    if user_agent and module == "http":
+        return ["--user-agent", user_agent]
+    return []
+
+
+ZGRAB2_SUCCESS_STATUS = "success"
+
+
+def successful_module_result(record: dict, module: str) -> Optional[dict]:
+    """The `data.<module>` object from one ZGrab2 result line, but only if ZGrab2 says
+    the grab actually succeeded. None otherwise, which callers record as `grab-failed`.
+
+    The status check is the whole point and it is not defensive padding. ZGrab2 emits a
+    line for *every* target it is given, failures included, and a failure line still
+    carries a full `data.<module>` object - just with `status` set to something like
+    "connection-timeout" or "connection-refused" and `result` set to `{}`:
+
+        {"ip":"45.33.32.156","data":{"http":{"status":"connection-timeout","result":{}}}}
+
+    Returning that unconditionally (as this used to) meant a failed grab normalized to
+    an all-null payload, hashed to a fingerprint, and was recorded as
+    `response_status="success"` - a host that answered nothing, published as though it
+    had. Because the payload is constant, so is the fingerprint: exactly one bogus
+    version row per protocol, and thousands of observations pointing at it. Measured in
+    production before this gate existed: 5490 http, 3852 tls and 1730 ssh such rows in
+    the current log files alone.
+
+    It was survivable only by accident. The old one-process-per-host path wrapped ZGrab2
+    in a 10s `subprocess.run` timeout, which usually killed it before its own (60s
+    default) `--target-timeout` could emit anything, so most dead hosts produced no
+    output at all and fell through to `grab-failed` correctly; only the fast failures
+    leaked. Streaming hands the timeout to ZGrab2 itself, so every one of those becomes
+    a real result line - the bug would have gone from a leak to the common case."""
+    result = record.get("data", {}).get(module)
+    if not isinstance(result, dict):
+        return None
+    if result.get("status") != ZGRAB2_SUCCESS_STATUS:
+        return None
+    return result
 
 
 @dataclass
@@ -352,12 +391,220 @@ def _record_grab_result(
 
 PopenFactory = Callable[..., "subprocess.Popen"]
 
+DEFAULT_GRAB_TIMEOUT_SECONDS = 10.0
+"""How long ZGrab2 may spend on one target, passed through as its own
+`--target-timeout`. Configurable per run (config.py's `grab_timeout_seconds`), because
+the right value is protocol-dependent: a banner protocol answers or doesn't, while an
+HTTPS handshake against a slow origin legitimately takes seconds.
+
+ZGrab2's own default is 60s, which is far too generous for a scanner on a schedule, and
+the value it replaces here is the 10s `subprocess.run` bound the one-process-per-host
+path used - see DEFAULT_COMMAND_TIMEOUT_SECONDS for how 10s was arrived at (585ms
+median, 1195ms p95 over 301 production hosts). Note ZGrab2 also applies a separate
+`--connect-timeout`, default 10s, which is left alone: it is a floor on how long a
+silent host is held, so a target-timeout below it would not do much."""
+
+GRAB_DRAIN_GRACE_SECONDS = 300
+"""How long to let ZGrab2 finish its in-flight targets after we close its stdin, before
+concluding it is stuck and killing it. Generous on purpose - at close there may still be
+a queue, and every one of those is a real host whose result we would rather wait for
+than discard. Bounded at all only so a wedged process cannot hold a cron slot forever."""
+
 DISCOVERY_EXIT_GRACE_SECONDS = 10
 """How long to wait for ZMap to exit on its own once its stdout has closed (EOF),
 before concluding it's actually stuck and killing it. Not zero: ZMap's receive thread
 still needs to join and it does a little cleanup/logging after the last CSV row is
 written - confirmed against the real binary, a real ~1s gap between "recv: thread
 finished" and "zmap: completed". 10s is a generous margin above that observed gap."""
+
+
+class _StreamingGrabber:
+    """One long-lived ZGrab2 process for a whole run, fed target addresses on stdin as
+    they are discovered, with results read back off stdout as they are produced.
+
+    This replaces a `ThreadPoolExecutor` of one-shot `grab_one` calls, which forked a
+    ZGrab2 process per responsive host. At 450000 candidates an hour and a ~1.3% hit
+    rate that is on the order of 6000 process spawns per run per protocol, each paying
+    Go runtime startup, and the concurrency ceiling was a pool of OS threads each
+    blocked on a subprocess. ZGrab2 is built for exactly this shape - it reads a target
+    stream and runs its own sender pool - so the concurrency moves inside one process
+    and becomes goroutines. That is what makes six concurrent protocols affordable on
+    two vCPUs where six pools of eight subprocess-blocked workers would not be.
+
+    Flags, all load-bearing:
+
+    - `--senders` is the internal concurrency, replacing `max_workers`. Same knob, much
+      cheaper unit: `grab_concurrency` used to buy OS threads and processes and now
+      buys goroutines, so the value it is set to is now conservative rather than
+      expensive. Raising it is a measurement question, not a cost one.
+    - `--flush` makes ZGrab2 write each result line as it completes instead of leaving
+      it in a stdio buffer. Without it results arrive in blocks and the reader thread
+      does nothing until the buffer fills, which for a slow protocol can be the whole
+      run. Verified against the real binary: output interleaves with input as expected.
+    - `--target-timeout` is the per-host bound, taking over from the `subprocess.run`
+      timeout that no longer exists on this path. See DEFAULT_GRAB_TIMEOUT_SECONDS.
+    - `--blocklist-file` is mandatory, not belt-and-braces. Left unset, ZGrab2 resolves
+      its default blocklist via `$HOME`, which is not reliably set under cron - and when
+      it cannot find the file it produces no results at all, silently. Omitting it is
+      how two of this change's own trial runs returned nothing.
+
+    Hosts that never produce a result line (ZGrab2 exiting mid-run being the only real
+    way, since it emits a line even for failures) are recorded as `grab-failed` at
+    close, from the difference between what was submitted and what came back. That costs
+    one set and a diff, and it is what stops a silently-dropped host looking identical
+    to one that was never discovered - which matters because the derived
+    known-responsive list, and therefore what `refresh` re-targets, is built from
+    published observations.
+    """
+
+    def __init__(
+        self,
+        *,
+        scan_id: str,
+        port: int,
+        module: str,
+        blocklist_path: str,
+        senders: int,
+        timeout_seconds: float,
+        record: Callable[[str, Optional[dict]], None],
+        record_lock: "threading.Lock",
+        popen: PopenFactory,
+        user_agent: Optional[str] = None,
+    ) -> None:
+        self._scan_id = scan_id
+        self._module = module
+        self._record = record
+        self._record_lock = record_lock
+        self._pending: set = set()
+        self._pending_lock = threading.Lock()
+        self._submitted = 0
+        self._results = 0
+
+        cmd = [
+            "zgrab2", module,
+            "--port", str(port),
+            "--blocklist-file", blocklist_path,
+            "--senders", str(senders),
+            "--target-timeout", f"{timeout_seconds:g}s",
+            "--flush",
+        ]
+        cmd.extend(_user_agent_args(module, user_agent))
+
+        # A temp file rather than a pipe, for the same reason ZMap's stderr is: we only
+        # drain stdout, so a stderr pipe that filled would deadlock the process we are
+        # waiting on. ZGrab2 logs per-target failures here, so it does fill.
+        self._stderr = tempfile.TemporaryFile(mode="w+")
+        logger.info("scan %s: starting streaming zgrab2: %s", scan_id, " ".join(cmd))
+        self._proc = popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=self._stderr,
+            text=True,
+        )
+        self._reader = threading.Thread(
+            target=self._drain, name=f"ichnos-grab-{module}", daemon=True
+        )
+        self._reader.start()
+
+    def submit(self, ip: str) -> None:
+        """Hand one address to ZGrab2. May block, and that is the intended behaviour:
+        if ZGrab2 is not keeping up, its stdin pipe fills and this waits, which in turn
+        stops us draining ZMap's stdout and lets ZMap's own pipe apply the brakes
+        upstream. The alternative - an unbounded in-process queue, which is what the
+        old ThreadPoolExecutor had - trades a slow run for one that grows memory and
+        then finishes long after its window regardless."""
+        with self._pending_lock:
+            self._pending.add(ip)
+            self._submitted += 1
+        try:
+            self._proc.stdin.write(f"{ip}\n")
+            self._proc.stdin.flush()
+        except (BrokenPipeError, ValueError) as exc:
+            # ZGrab2 has gone. Nothing useful to do per-host; close() reconciles the
+            # whole pending set to grab-failed and the exit code is logged there.
+            logger.error("scan %s: zgrab2 stdin closed while submitting %s: %s",
+                         self._scan_id, ip, exc)
+
+    def _drain(self) -> None:
+        for line in self._proc.stdout:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                logger.warning("scan %s: unparseable zgrab2 output line", self._scan_id)
+                continue
+            ip = record.get("ip")
+            if not ip:
+                continue
+            with self._pending_lock:
+                self._pending.discard(ip)
+                self._results += 1
+            module_result = successful_module_result(record, self._module)
+            try:
+                with self._record_lock:
+                    self._record(ip, module_result)
+            except Exception:
+                # The reader thread is the only thing recording grabs; letting an
+                # exception kill it would stop every subsequent result being recorded
+                # while the run carried on looking healthy.
+                logger.exception("scan %s: failed to record grab for %s", self._scan_id, ip)
+
+    def close(self) -> None:
+        """Stop feeding ZGrab2, wait for it to work through what it already has, and
+        reconcile anything that never came back."""
+        try:
+            self._proc.stdin.close()
+        except (BrokenPipeError, ValueError):
+            pass
+
+        self._reader.join(timeout=GRAB_DRAIN_GRACE_SECONDS)
+        if self._reader.is_alive():
+            logger.error(
+                "scan %s: zgrab2 still producing results %gs after stdin closed, killing",
+                self._scan_id, GRAB_DRAIN_GRACE_SECONDS,
+            )
+            self._proc.kill()
+            self._reader.join(timeout=DISCOVERY_EXIT_GRACE_SECONDS)
+
+        try:
+            self._proc.wait(timeout=DISCOVERY_EXIT_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            self._proc.kill()
+            self._proc.wait()
+
+        if self._proc.returncode not in (0, None):
+            self._stderr.seek(0)
+            tail = self._stderr.read().strip().splitlines()[-5:]
+            logger.error(
+                "scan %s: zgrab2 exited with code %s after %d of %d results: %s",
+                self._scan_id, self._proc.returncode, self._results, self._submitted,
+                " | ".join(tail) or "(no stderr output)",
+            )
+        self._stderr.close()
+
+        with self._pending_lock:
+            unanswered = sorted(self._pending)
+            self._pending.clear()
+        if unanswered:
+            logger.error(
+                "scan %s: %d of %d submitted hosts produced no zgrab2 result, recording "
+                "as grab-failed", self._scan_id, len(unanswered), self._submitted,
+            )
+            for ip in unanswered:
+                try:
+                    with self._record_lock:
+                        self._record(ip, None)
+                except Exception:
+                    logger.exception(
+                        "scan %s: failed to record unanswered host %s", self._scan_id, ip
+                    )
+        logger.info(
+            "scan %s: streaming zgrab2 finished, %d submitted, %d results",
+            self._scan_id, self._submitted, self._results,
+        )
 
 
 def _stream_discover_and_grab(
@@ -377,10 +624,10 @@ def _stream_discover_and_grab(
     gateway_mac: Optional[str],
     cooldown_seconds: int,
     rate_pps: int,
-    grab_run_command: CommandRunner,
     popen: PopenFactory,
     user_agent: Optional[str] = None,
     grab_concurrency: int = DEFAULT_GRAB_CONCURRENCY,
+    grab_timeout_seconds: float = DEFAULT_GRAB_TIMEOUT_SECONDS,
 ) -> None:
     """One ZMap process, run for the whole scan window, streaming classified results as
     they arrive rather than hundreds of separate single-target invocations.
@@ -453,73 +700,69 @@ def _stream_discover_and_grab(
     watchdog.start()
     record_lock = threading.Lock()
 
-    def _grab_worker(target_ip: str) -> None:
-        # Exceptions inside a pool worker land in a Future nobody reads, so an
-        # unexpected failure here would silently drop a host and look exactly like a
-        # host that never answered. Log it instead - the same reason ZMap's stderr is
-        # captured rather than sent to DEVNULL (see this function's docstring).
-        try:
-            _grab_and_record(
-                scan_id=scan_id, protocol=protocol, ip=target_ip, port=port,
-                zgrab2_module=zgrab2_module, blocklist_path=blocklist_path,
-                run_command=grab_run_command,
-                version_index=version_index, today=today,
-                clock=clock, outcome=outcome, metadata=metadata, user_agent=user_agent,
-                record_lock=record_lock,
-            )
-        except Exception:
-            logger.exception("scan %s: grab worker failed for %s", scan_id, target_ip)
+    def _record(ip: str, module_result: Optional[dict]) -> None:
+        _record_grab_result(
+            module_result=module_result, scan_id=scan_id, protocol=protocol, ip=ip,
+            port=port, zgrab2_module=zgrab2_module, version_index=version_index,
+            today=today, clock=clock, outcome=outcome, metadata=metadata,
+        )
+
+    grabber = _StreamingGrabber(
+        scan_id=scan_id, port=port, module=zgrab2_module,
+        blocklist_path=blocklist_path, senders=grab_concurrency,
+        timeout_seconds=grab_timeout_seconds, record=_record,
+        record_lock=record_lock, popen=popen, user_agent=user_agent,
+    )
 
     try:
-        # Grabs run on a bounded pool rather than inline. ZMap finishes on schedule
-        # regardless of what this loop does - it is a separate process, and the stdout
-        # pipe buffers - so a serial reader only shows up as the run overrunning once
-        # the backlog exceeds the whole window. That bound is set by the rate, not the
-        # slice size: grab work scales with candidates while the window is
-        # candidates/rate, so the share of a run spent grabbing is proportional to pps
-        # (~11% measured at 8pps, ~30% at 16pps). Serial grabbing therefore caps this
-        # design near 50pps no matter how the window is sized, which is what this pool
-        # exists to lift.
+        # Grabs go to a single long-lived ZGrab2 rather than being run inline. ZMap
+        # finishes on schedule regardless of what this loop does - it is a separate
+        # process, and the stdout pipe buffers - so a serial reader only shows up as the
+        # run overrunning once the backlog exceeds the whole window. That bound is set
+        # by the rate, not the slice size: grab work scales with candidates while the
+        # window is candidates/rate, so the share of a run spent grabbing is
+        # proportional to pps (~11% measured at 8pps, ~30% at 16pps). Serial grabbing
+        # therefore caps this design near 50pps no matter how the window is sized, which
+        # is what the concurrency exists to lift.
         #
         # It adds no load to any individual target: every concurrent grab is against a
         # different host, and the discovery rate ZMap sends at is untouched. What it
         # changes is how many of *our* outbound handshakes are in flight at once.
-        with ThreadPoolExecutor(
-            max_workers=grab_concurrency, thread_name_prefix="ichnos-grab"
-        ) as pool:
-            for line in proc.stdout:
-                line = line.strip()
-                if not line or "," not in line:
-                    continue
-                ip, classification = line.split(",", 1)
-                ip, classification = ip.strip(), classification.strip()
+        for line in proc.stdout:
+            line = line.strip()
+            if not line or "," not in line:
+                continue
+            ip, classification = line.split(",", 1)
+            ip, classification = ip.strip(), classification.strip()
 
-                if classification == "rst":
-                    logger.info("scan %s: %s closed (RST)", scan_id, ip)
-                    with record_lock:
-                        outcome.observations.append(
-                            Observation(
-                                scan_id=scan_id,
-                                observed_at=clock(),
-                                ip=ip,
-                                port=port,
-                                protocol=protocol,
-                                response_status="closed",
-                                fingerprint_id=None,
-                            )
+            if classification == "rst":
+                logger.info("scan %s: %s closed (RST)", scan_id, ip)
+                with record_lock:
+                    outcome.observations.append(
+                        Observation(
+                            scan_id=scan_id,
+                            observed_at=clock(),
+                            ip=ip,
+                            port=port,
+                            protocol=protocol,
+                            response_status="closed",
+                            fingerprint_id=None,
                         )
-                    continue
+                    )
+                continue
 
-                if classification != "synack":
-                    continue  # unrecognized classification - ignore rather than guess
+            if classification != "synack":
+                continue  # unrecognized classification - ignore rather than guess
 
-                logger.info("scan %s: %s responded (synack), grabbing", scan_id, ip)
-                pool.submit(_grab_worker, ip)
-        # Leaving the `with` waits for every submitted grab, so the run does not report
-        # a result until the last one has been recorded. A run whose backlog outlasts
-        # ZMap still finishes late rather than losing hosts - the flock guard turns
-        # that into a skipped tick, which is the signal to look at, not silent loss.
+            logger.info("scan %s: %s responded (synack), grabbing", scan_id, ip)
+            grabber.submit(ip)
     finally:
+        # Before anything else, including the ZMap teardown below: close() drains the
+        # grabs still in flight, and the run must not report a result until the last one
+        # has been recorded. A run whose backlog outlasts ZMap finishes late rather than
+        # losing hosts - the flock guard turns that into a skipped tick, which is the
+        # signal to look at, not silent loss.
+        grabber.close()
         watchdog.cancel()
         # ZMap closes stdout (ending the loop above via EOF) slightly before it has
         # actually exited - its receive thread still needs to join and it does a
@@ -589,6 +832,7 @@ def run_scan(
     cooldown_seconds: int = DEFAULT_ZMAP_COOLDOWN_SECONDS,
     rate_pps: int = DEFAULT_ZMAP_RATE_PPS,
     grab_concurrency: int = DEFAULT_GRAB_CONCURRENCY,
+    grab_timeout_seconds: float = DEFAULT_GRAB_TIMEOUT_SECONDS,
     popen: PopenFactory = subprocess.Popen,
     user_agent: Optional[str] = None,
 ) -> ScanRunOutcome:
@@ -642,7 +886,7 @@ def run_scan(
         today=today, clock=clock, outcome=outcome,
         metadata=metadata, gateway_mac=gateway_mac, cooldown_seconds=cooldown_seconds,
         rate_pps=rate_pps, grab_concurrency=grab_concurrency,
-        grab_run_command=run_command, popen=popen,
+        grab_timeout_seconds=grab_timeout_seconds, popen=popen,
         user_agent=user_agent,
     )
 
@@ -664,10 +908,11 @@ def run_refresh_scan(
     rate_limiter: TokenBucket,
     known_hosts: List[str],
     version_index: VersionIndexStore,
-    run_command: CommandRunner = _default_run_command,
     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     user_agent: Optional[str] = None,
     concurrency: int = DEFAULT_GRAB_CONCURRENCY,
+    grab_timeout_seconds: float = DEFAULT_GRAB_TIMEOUT_SECONDS,
+    popen: PopenFactory = subprocess.Popen,
     time_budget_seconds: Optional[float] = None,
 ) -> ScanRunOutcome:
     """Re-test currently-known-responsive hosts for `protocol`, to detect drift
@@ -699,30 +944,31 @@ def run_refresh_scan(
         f"{time_budget_seconds}s" if time_budget_seconds else "unbounded",
     )
 
-    # Same grab-concurrent / record-serialized split discovery uses, and for the same
-    # reason - see `_grab_and_record`. The rate limiter stays in this loop rather than
-    # inside the workers, so it paces *submissions*: the bucket decides how fast hosts
-    # are handed out, the pool bounds how many are in flight, and one 30s timeout no
+    # Same grab-concurrent / record-serialized split discovery uses, and through the
+    # same single streaming ZGrab2 - see `_StreamingGrabber`. Refresh is where the
+    # per-host process spawn hurt most: it re-checks a 15-day window, so a large share
+    # of its targets have gone away and every one of those used to cost a fork whose
+    # only output was a timeout. The rate limiter stays in this loop rather than moving
+    # inside the grabber, so it paces *submissions*: the bucket decides how fast hosts
+    # are handed out, `--senders` bounds how many are in flight, and one slow host no
     # longer stalls the queue behind it. Those two knobs were previously the same knob,
     # which is why a single slow host cost the whole run five seconds plus its timeout.
     record_lock = threading.Lock()
 
-    def _refresh_worker(ip: str) -> None:
-        try:
-            _grab_and_record(
-                scan_id=scan_id, protocol=protocol, ip=ip, port=port,
-                zgrab2_module=zgrab2_module, blocklist_path=blocklist_path,
-                run_command=run_command,
-                version_index=version_index, today=today,
-                clock=clock, outcome=outcome, metadata=metadata, user_agent=user_agent,
-                record_lock=record_lock,
-            )
-        except Exception:
-            logger.exception("refresh %s: grab worker failed for %s", scan_id, ip)
+    def _record(ip: str, module_result: Optional[dict]) -> None:
+        _record_grab_result(
+            module_result=module_result, scan_id=scan_id, protocol=protocol, ip=ip,
+            port=port, zgrab2_module=zgrab2_module, version_index=version_index,
+            today=today, clock=clock, outcome=outcome, metadata=metadata,
+        )
 
-    with ThreadPoolExecutor(
-        max_workers=concurrency, thread_name_prefix="ichnos-refresh"
-    ) as pool:
+    grabber = _StreamingGrabber(
+        scan_id=scan_id, port=port, module=zgrab2_module,
+        blocklist_path=blocklist_path, senders=concurrency,
+        timeout_seconds=grab_timeout_seconds, record=_record,
+        record_lock=record_lock, popen=popen, user_agent=user_agent,
+    )
+    try:
         for ip in known_hosts:
             if deadline is not None and monotonic() >= deadline:
                 logger.info(
@@ -739,7 +985,9 @@ def run_refresh_scan(
                 logger.warning("refresh %s: %s is now blocklisted, skipping", scan_id, ip)
                 continue
             rate_limiter.wait()
-            pool.submit(_refresh_worker, ip)
+            grabber.submit(ip)
+    finally:
+        grabber.close()
 
     metadata.ended_at = clock()
     metadata.status = "completed"

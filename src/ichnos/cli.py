@@ -243,6 +243,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
         cooldown_seconds=settings.zmap_cooldown_seconds,
         rate_pps=args.rate_pps or settings.zmap_rate_pps,
         grab_concurrency=settings.grab_concurrency,
+        grab_timeout_seconds=settings.grab_timeout_seconds,
         user_agent=settings.scan_user_agent,
     )
     _write_pending_outcome(settings, outcome)
@@ -279,9 +280,6 @@ def cmd_refresh(args: argparse.Namespace) -> int:
     )
 
     outcome = run_refresh_scan(
-        run_command=functools.partial(
-            _default_run_command, timeout=settings.grab_timeout_seconds
-        ),
         scan_id=scan_id,
         protocol=args.protocol,
         port=entry.port,
@@ -294,6 +292,7 @@ def cmd_refresh(args: argparse.Namespace) -> int:
         version_index=store.version_index,
         user_agent=settings.scan_user_agent,
         concurrency=settings.grab_concurrency,
+        grab_timeout_seconds=settings.grab_timeout_seconds,
         time_budget_seconds=settings.refresh_duration_seconds or None,
     )
     _write_pending_outcome(settings, outcome)
