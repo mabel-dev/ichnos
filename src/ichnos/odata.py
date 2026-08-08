@@ -208,6 +208,7 @@ def grouped_max(
     base_url: str = DEFAULT_ODATA_BASE,
     prefix: str = DEFAULT_ODATA_PREFIX,
     top: int = MAX_TOP,
+    order_by: Optional[str] = None,
     get: Optional[Callable[..., Any]] = None,
 ) -> List[Dict[str, Any]]:
     """One row per distinct `column`, carrying `max(max_column)` as `alias`.
@@ -222,14 +223,21 @@ def grouped_max(
     ever succeed" and "when did we last try it") instead of issuing a second query and
     joining the results here. Grouping is what the feed is for.
 
-    Note the feed will not `$orderby` an aggregate alias, so callers sort the result
-    themselves; at the sizes this returns that is trivial next to the transfer saved by
-    aggregating server-side.
+    `order_by` sorts server-side, and it may name the aggregate alias - `$orderby=last_at`
+    against a `last_at` produced by the aggregate is accepted and correct, verified
+    against the live feed. This module used to assert the opposite and sort client-side,
+    which is what forced whole-result reads: to find the thousand oldest hosts it pulled
+    all 130408 of them, and so needed a page size it did not have. Ordering here instead
+    turns `$top` from a completeness problem into a deliberate truncation of the end of
+    the queue nobody reaches.
     """
     columns = [column] if isinstance(column, str) else list(column)
     inner = f"groupby(({','.join(columns)}),aggregate({max_column} with max as {alias}))"
     apply_expr = f"filter({where})/{inner}" if where else inner
-    query = f"$apply={quote(apply_expr, safe='()/,')}&$top={top}"
+    query = f"$apply={quote(apply_expr, safe='()/,')}"
+    if order_by:
+        query += f"&$orderby={quote(order_by, safe='')}"
+    query += f"&$top={top}"
     return [
         row
         for row in iter_rows(path, query, token=token, base_url=base_url, prefix=prefix,

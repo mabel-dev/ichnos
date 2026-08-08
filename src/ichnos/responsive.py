@@ -137,7 +137,14 @@ def fetch_responsive_hosts(
     dataset = f"{workspace}/{collection}/{OBSERVATIONS_DATASET}"
 
     def newest_per_ip(status_clause: str) -> dict:
-        kwargs = {"where": f"{scoped} and {status_clause}", "token": token, "get": get}
+        # Oldest first, server-side, so a result too large for one page is truncated at
+        # the *newest* end - the end refresh would not have reached before tomorrow's
+        # derivation replaces the list anyway. Sorting here instead of client-side is
+        # what makes a single page sufficient: http has 130408 responsive hosts against
+        # a 100000-row ceiling, but refresh consumes ~26000 a day, so the thousand it
+        # needs next are never near the truncation.
+        kwargs = {"where": f"{scoped} and {status_clause}", "token": token, "get": get,
+                  "order_by": "last_at"}
         if base_url:
             kwargs["base_url"] = base_url
         rows = grouped_max(dataset, "ip", "observed_at", "last_at", **kwargs)

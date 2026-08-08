@@ -314,3 +314,42 @@ def test_a_single_page_aggregate_read_is_returned_normally():
     )
     assert rows == [{"ip": "203.0.113.1", "response_status": "success",
                      "last_at": "2026-08-01T00:00:00Z"}]
+
+
+def test_the_derivation_asks_the_feed_to_sort_oldest_first():
+    """Sorting server-side is what makes a single page enough.
+
+    Sorting client-side meant the whole set had to be read to find the head of the
+    queue: 130408 responsive http hosts against a 100000-row page ceiling that cannot
+    be paged past without silently corrupting the result. Ordering in the query turns
+    `$top` from a completeness problem into a truncation of the *newest* end - and
+    refresh consumes ~26000 hosts a day oldest-first, so the ones it needs next are
+    nowhere near the cut, and tomorrow's derivation replaces the list regardless.
+
+    `$orderby` naming the aggregate alias is accepted by this feed. The module asserted
+    the opposite for a long time, which is how the client-side sort got there."""
+    calls = []
+    fetch_responsive_hosts(
+        "http", workspace="ichnos", collection="landing", token="t",
+        now=datetime(2026, 8, 4, tzinfo=timezone.utc),
+        get=_fake_derivation([], [], calls),
+    )
+    for url in calls:
+        assert "$orderby=last_at" in url
+        assert url.index("$orderby") < url.index("$top"), "orderby must precede top"
+
+
+def test_truncation_lands_on_the_newest_hosts_not_the_oldest():
+    """The property that makes the truncation safe. Whatever the feed returns, the
+    hosts refresh takes next are the least recently attempted - so a short read costs
+    coverage at the back of the queue, never at the front."""
+    hosts = fetch_responsive_hosts(
+        "http", workspace="ichnos", collection="landing", token="t",
+        now=datetime(2026, 8, 5, tzinfo=timezone.utc),
+        get=_fake_derivation([
+            _row("oldest", "2026-07-30T00:00:00Z"),
+            _row("middle", "2026-08-02T00:00:00Z"),
+            _row("newest", "2026-08-04T00:00:00Z"),
+        ]),
+    )
+    assert [ip for ip, _ in hosts] == ["oldest", "middle", "newest"]
