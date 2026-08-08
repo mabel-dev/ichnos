@@ -218,6 +218,35 @@ variable "scan_protocol_budgets" {
     Hit rates so far, per 25000 candidates: ftp 37 responsive, smtp 30, telnet 4.
     Telnet at 0.016% is an order of magnitude below the others and is the first place
     to reconsider if this space is ever needed elsewhere.
+
+    Telnet was then cut back to 25000. Doubling it to 50000 bought two more hosts - 6
+    against 4 - so it converts at 0.012%, roughly 110x worse per candidate than http.
+    The 25000 released go to https, where they are worth about 330 hosts instead of 2.
+    Kept rather than dropped because a near-empty result is still a measurement, and at
+    25000 it costs 781s in a slot nothing else wants.
+
+    Latest step, 600000 -> 675000, is the first sized against a separation of what is
+    cheap from what is expensive rather than against total candidates:
+
+      * Candidates are cheap. 525000 -> 600000 was +14% and barely moved CPU.
+      * Grabs are expensive. Taking refresh from 1/s to 4/s moved refresh from 3303
+        grabs an hour to 13197 - which is 2.7x discovery's entire grab output - and CPU
+        went 46.7% -> 69.9% average, 75.5% peak.
+
+    That is the correction to an earlier mistake in this file's reasoning: refresh was
+    argued to be "a rounding error" by comparing its grab count against discovery's
+    *candidate* count. 600000 candidates yield only ~4800 grabs, so the comparison was
+    against the wrong denominator by two orders of magnitude.
+
+    So the increase is spent on candidates and weighted to the protocols that convert
+    best - http 1.34% and https 1.33% against ssh's 0.65%. ssh keeps its 175000 despite
+    being the largest budget: it was sized largest when a grab meant forking a process
+    and its low hit rate made it cheapest, and streaming has made that reasoning
+    obsolete without yet making a case for growing it.
+
+    Rates rise with candidates so every window is unchanged - http 200000@64 and https
+    175000@56 are both 3128s, exactly what 150000@48 and 125000@40 were. Nothing about
+    the cron layout or the flock margins moves.
   EOT
   type = map(object({
     candidates = number
@@ -225,11 +254,11 @@ variable "scan_protocol_budgets" {
     minute     = number
   }))
   default = {
-    http   = { candidates = 150000, rate_pps = 48, minute = 6 }
-    https  = { candidates = 125000, rate_pps = 40, minute = 6 }
+    http   = { candidates = 200000, rate_pps = 64, minute = 6 }
+    https  = { candidates = 175000, rate_pps = 56, minute = 6 }
     ssh    = { candidates = 175000, rate_pps = 64, minute = 6 }
     ftp    = { candidates = 50000, rate_pps = 64, minute = 10 }
-    telnet = { candidates = 50000, rate_pps = 64, minute = 30 }
+    telnet = { candidates = 25000, rate_pps = 32, minute = 30 }
     smtp   = { candidates = 50000, rate_pps = 64, minute = 50 }
   }
 }
