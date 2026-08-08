@@ -84,22 +84,27 @@ class SiteConfig:
             (
                 "What is this?",
                 "An Internet measurement research project. It sends a small number of "
-                "HTTP/HTTPS/SSH protocol-negotiation requests to publicly routable hosts "
-                "and records only the metadata exposed during that negotiation.",
+                "protocol-negotiation requests to publicly routable hosts - currently "
+                "HTTP, HTTPS, SSH, FTP, Telnet and SMTP - and records only the metadata "
+                "exposed during that negotiation. The full list of ports is on the "
+                "Responsible Scanning page.",
             ),
             (
                 "Is this an attack or a vulnerability scan?",
                 "No. Nothing here attempts to authenticate, log in, exploit, or access "
                 "anything beyond a normal protocol handshake - the same initial exchange "
-                "a browser (HTTP/HTTPS) or an SSH client performs before any credentials "
-                "are ever involved.",
+                "a browser, an SSH client, an FTP client or a mail server performs "
+                "before any credentials are ever involved. In particular we do not send "
+                "or relay mail on port 25, and we do not try any Telnet login: both are "
+                "read-only banner exchanges, closed immediately.",
             ),
             (
                 "How often are you scanning me?",
                 "See the Responsible Scanning page for the full answer - in short, "
                 "a small number of requests per second during active discovery "
                 "windows, and essentially never repeated against the same host "
-                "except a single daily re-check for hosts already known to respond.",
+                "except a periodic re-check for hosts already known to respond, which "
+                "reaches any given host every few days at most.",
             ),
             (
                 "How do I stop being scanned?",
@@ -202,8 +207,8 @@ def _scanner_txt(config: SiteConfig) -> str:
         f"Info: {config.site_url}/responsible-scanning\n"
         f"Opt-out: {config.site_url}/opt-out\n"
         f"{identity}"
-        f"Purpose: Internet measurement research (HTTP/HTTPS/SSH protocol metadata only "
-        f"- no exploitation, authentication, or credential testing)\n"
+        f"Purpose: Internet measurement research (protocol handshake metadata only "
+        f"- no exploitation, authentication, credential testing, or mail relay)\n"
         f"Source: {config.source_repo_url}\n"
     )
 
@@ -320,7 +325,15 @@ is not this project. The same facts are published in machine-readable form at
 <p>Nothing beyond a normal protocol handshake is attempted - for HTTP/HTTPS, the same
 negotiation a web browser performs when it loads a page; for SSH, the same pre-login
 banner and key exchange any SSH client performs before a username or password is ever
-sent.</p>
+sent; for FTP, Telnet and SMTP, the greeting the server itself sends on connect, read
+once and then disconnected.</p>
+<p>Two of these ports have a bad reputation for good reasons, so to be explicit about
+what we do <em>not</em> do on them. On port 25 we read the greeting and, where the
+server offers one, its capability advertisement; we never send, relay or attempt to
+relay mail, and never issue MAIL FROM or RCPT TO. On port 23 we read the greeting and
+the server's option negotiation; we never attempt a login, and never send credentials -
+default, guessed or otherwise. If you are seeing login attempts on either port, they
+are not from this project, and the source addresses above are how to confirm that.</p>
 
 <h2>What we collect</h2>
 <ul>
@@ -331,7 +344,17 @@ sent.</p>
   <li><strong>SSH:</strong> the server's pre-login banner (software name and version)
   and host key algorithm/fingerprint. No key exchange material or connection-specific
   cryptographic values are retained - see this project's `normalize.py` for why.</li>
+  <li><strong>FTP:</strong> the greeting line and its reply code.</li>
+  <li><strong>Telnet:</strong> the greeting and which protocol options the server
+  offers to negotiate.</li>
+  <li><strong>SMTP:</strong> the greeting line, its reply code, and the capability
+  list the server advertises in response to EHLO (for example whether it offers
+  STARTTLS).</li>
 </ul>
+<p>For the three banner protocols we keep only the first line of the greeting, with
+session identifiers, clocks and counters removed - a greeting that says how many users
+are connected or what time it is locally tells us nothing about the service and would
+otherwise be recorded on every visit.</p>
 <p>No application content, credentials, or session data is collected or retained.</p>
 
 <h2>What we don't do</h2>
@@ -341,6 +364,8 @@ sent.</p>
   <li>No brute forcing.</li>
   <li>No execution of commands or code on scanned hosts.</li>
   <li>No access to anything beyond the public protocol handshake itself.</li>
+  <li>No sending, relaying, or attempted relaying of email.</li>
+  <li>No open-relay or open-resolver testing.</li>
 </ul>
 
 <h2>How often</h2>

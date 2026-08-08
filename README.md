@@ -18,7 +18,10 @@ identity](#scanner-identity) below.
 
 ## Scope (MVP)
 
-- **Protocols**: HTTP, HTTPS, and SSH.
+- **Protocols**: HTTP (80), HTTPS (443), SSH (22), FTP (21), Telnet (23) and
+  SMTP (25). The public Responsible Scanning page builds its port table from the
+  ScanSchedule so it cannot drift; the prose beside it is hand-written and has
+  drifted before, so `tests/test_webapp_disclosure.py` pins both.
 - **Discovery vs refresh**: `scan` runs native ZMap discovery (rate-limited via ZMap's
   own `--rate`, `ICHNOS_ZMAP_RATE_PPS` - 32 pps as of the latest adjustment, see
   `config.py`'s `zmap_rate_pps`) over addresses that aren't already known-responsive,
@@ -55,6 +58,8 @@ src/ichnos/
   blocklist.py      # merges bogons + self-serve opt-outs + jurisdiction CIDRs
   jurisdiction.py   # weekly job: RIR delegated-stats (or ipdeny fallback) -> CIDR list
   normalize.py      # extracts protocol-relevant fields from raw ZGrab2 JSON
+                    # banner protocols (ftp/telnet/smtp) are reduced before hashing -
+                    # greetings carry clocks and session ids, see _stable_banner
   fingerprint.py    # canonicalize + hash normalized fields -> fingerprint_id
   scanner.py        # native ZMap discovery (run_scan) + known-host refresh (run_refresh_scan)
   publish.py        # batches changed rows and commits to Opteryx via opteryx-upload
