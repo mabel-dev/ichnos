@@ -75,9 +75,27 @@ variable "zmap_rate_pps" {
 }
 
 variable "refresh_rate_per_second" {
-  description = "How many known hosts a second `refresh` may re-grab. Not the limiting factor in practice - grab_timeout_seconds is, since refresh targets a 15-day window and a host that has gone away occupies a worker for the whole timeout. Kept below the pool's real throughput so the number means something."
+  description = <<-EOT
+    How many known hosts a second `refresh` may re-grab.
+
+    Raised from 1 once refresh stopped being expensive. At 1/s a run covers 1101 hosts
+    (rate x refresh_duration_seconds) and ssh has 95226 known hosts, which is a 3.6-day
+    cycle; 4/s makes it about a day. Refresh is 3303 grabs an hour against discovery's
+    525000 candidates, so this is a rounding error on CPU - measured at 46.7% average
+    with the old value.
+
+    1 was chosen when every grab forked a ZGrab2 process and a host that had gone away
+    pinned a worker for the full grab_timeout_seconds. Streaming moved that inside one
+    process, so the rate limiter is no longer standing in for a concurrency limit.
+
+    It has to be read together with grab_concurrency, which is the drain rate. Refresh
+    targets a 15-day window, so roughly a fifth of its targets have gone away and cost
+    the full 10s timeout while the rest complete in about a second - a mean near 2.8s.
+    Eight senders therefore drain about 2.9/s, and submitting at 4/s would simply block
+    on backpressure rather than go faster. Hence 32 senders alongside this.
+  EOT
   type        = number
-  default     = 1
+  default     = 4
 }
 
 variable "refresh_duration_seconds" {
@@ -93,9 +111,24 @@ variable "grab_timeout_seconds" {
 }
 
 variable "grab_concurrency" {
-  description = "How many ZGrab2 grabs may be in flight at once, for both discovery and refresh. Bounds simultaneous outbound handshakes; every one is to a different host, so it does not make the scan heavier for anyone being scanned."
+  description = <<-EOT
+    How many ZGrab2 grabs may be in flight at once, for both discovery and refresh.
+    Bounds simultaneous outbound handshakes; every one is to a different host, so it
+    does not make the scan heavier for anyone being scanned.
+
+    Now ZGrab2's `--senders`, which is goroutines inside one long-running process. It
+    used to be `max_workers` on a pool of OS threads each blocked on its own ZGrab2
+    subprocess, and 8 was sized against that cost. A goroutine is not that cost, so the
+    old figure was conservative for a constraint that no longer exists.
+
+    32 because refresh needs it: at a 2.8s mean grab (a fifth of a 15-day window has
+    gone away and costs the full 10s timeout) 8 senders drain about 2.9/s, under the
+    4/s refresh now submits at. 32 drains about 11/s, so the rate limiter is what paces
+    refresh rather than the drain accidentally doing it. Discovery is unaffected either
+    way - it produces under two grabs a second, so the extra senders sit idle.
+  EOT
   type        = number
-  default     = 8
+  default     = 32
 }
 
 variable "scan_protocol_budgets" {
@@ -169,17 +202,22 @@ variable "scan_protocol_budgets" {
     about in production.
 
     ftp/telnet/smtp are therefore sized to be short rather than to fill the hour, and
-    slotted so they never overlap each other: 25000 at 32pps is a 784s nominal (13.1
-    minutes), and :10/:30/:50 leaves 6.9 minutes of clearance between consecutive
-    runs. At most four ZMaps are ever live - the three long-running ones plus exactly
-    one banner protocol. 32pps is not an aggressive rate here; it is what all three of
-    the original protocols ran at before they were sized individually.
+    slotted so they never overlap each other. Candidates and rate are raised together
+    so the 784s nominal (13.1 minutes) is unchanged - doubling both is runtime-neutral,
+    which is what keeps :10/:30/:50 clear by 6.9 minutes and holds concurrent ZMaps at
+    four: the three long-running ones plus exactly one banner protocol. Scaling
+    candidates alone to 50000 would have made each run 26 minutes and put two banner
+    protocols on the wire at once.
 
-    Total is 525000/hour, of which the new protocols are 75000. They are deliberately
-    the smallest budgets in the map: nothing is known yet about their hit rates, and a
-    banner protocol's grab is cheap but its *fingerprint* is not proven stable (see
-    normalize.py's `_stable_banner`). Raise them once the versions-row count per
-    observation looks like the other protocols' rather than before.
+    Total is 600000/hour, of which the banner protocols are 150000. They started at
+    25000 to see what they cost before committing to them; nine hours of measurement
+    said the cost is not visible - every protocol landed within +0.1% of nominal, CPU
+    held 46.7% average and 60-63% peak, no skipped ticks - so the budget doubles to
+    gather hosts rather than to gather evidence.
+
+    Hit rates so far, per 25000 candidates: ftp 37 responsive, smtp 30, telnet 4.
+    Telnet at 0.016% is an order of magnitude below the others and is the first place
+    to reconsider if this space is ever needed elsewhere.
   EOT
   type = map(object({
     candidates = number
@@ -190,9 +228,9 @@ variable "scan_protocol_budgets" {
     http   = { candidates = 150000, rate_pps = 48, minute = 6 }
     https  = { candidates = 125000, rate_pps = 40, minute = 6 }
     ssh    = { candidates = 175000, rate_pps = 64, minute = 6 }
-    ftp    = { candidates = 25000, rate_pps = 32, minute = 10 }
-    telnet = { candidates = 25000, rate_pps = 32, minute = 30 }
-    smtp   = { candidates = 25000, rate_pps = 32, minute = 50 }
+    ftp    = { candidates = 50000, rate_pps = 64, minute = 10 }
+    telnet = { candidates = 50000, rate_pps = 64, minute = 30 }
+    smtp   = { candidates = 50000, rate_pps = 64, minute = 50 }
   }
 }
 
