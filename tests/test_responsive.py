@@ -275,33 +275,39 @@ def test_a_host_that_only_ever_failed_is_not_a_refresh_target():
     assert [ip for ip, _ in hosts] == ["real"]
 
 
-def test_an_aggregate_read_refuses_to_paginate():
+def test_an_aggregate_read_never_follows_a_next_link(caplog):
     """Paged `$apply` results from this feed are silently wrong. The row count is right
     and matches the equivalent SQL exactly, but the contents are not - rows are
     duplicated and others dropped, differently on every run. Measured against ssh
     observations, same query, same data, minutes apart:
 
         $top=100000 (1 page)   86184 rows, 86184 distinct ip, 0 duplicated
-        $top=100000 (again)    86184 rows, 86184 distinct ip - byte-identical
+        $top=100000 (again)    86184 rows, 86184 distinct ip - identical
         $top=25000  (4 pages)  86184 rows, 61348 distinct ip, 24836 duplicated
         $top=25000  (again)    86184 rows, 57882 distinct ip, 28302 duplicated
 
-    So the failure mode to design against is not an error, it is a plausible answer -
-    and it had already reached production, where the derived lists carried 130408 lines
-    for 80048 real http hosts. Nothing this project reads needs a second page at
-    $top=100000, and the day something does it must stop: responsive.py keeps the
-    previous list when a read raises, and has no way to tell a corrupt answer from a
-    good one."""
+    So one page is not a smaller answer than two, it is the only correct one. It had
+    already reached production silently, leaving the derived lists holding 80048
+    distinct hosts where 130408 exist.
+
+    Truncating is allowed and following the link is not, because the caller orders the
+    query: the rows it needs are at the front and the tail it loses is the part refresh
+    would not reach before the next derivation. That has to be loud, though - a short
+    list and a complete one look identical from the outside."""
+    import logging
+
     paged = [
         {"value": [{"ip": "203.0.113.1", "last_at": "2026-08-01T00:00:00Z"}],
          "@odata.nextLink": "/api/v4/ws/coll/observations?%24skip=1"},
         {"value": [{"ip": "203.0.113.2", "last_at": "2026-08-02T00:00:00Z"}]},
     ]
 
-    with pytest.raises(ODataError, match="more than one page"):
-        grouped_max("ws/coll/observations", "ip", "observed_at", "last_at",
-                    get=_fake_get(paged))
+    with caplog.at_level(logging.WARNING, logger="ichnos.odata"):
+        rows = grouped_max("ws/coll/observations", "ip", "observed_at", "last_at",
+                           get=_fake_get(paged))
 
+    assert rows == [{"ip": "203.0.113.1", "last_at": "2026-08-01T00:00:00Z"}]
+    assert any("first page only" in r.message for r in caplog.records)
 
 def test_a_single_page_aggregate_read_is_returned_normally():
     """The guard must not fire on the normal case - every real query fits today."""

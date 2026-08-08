@@ -157,9 +157,12 @@ def iter_rows(
     """Yield every row of a query, following `@odata.nextLink` until the feed stops
     offering one.
 
-    `single_page=True` refuses to follow the link at all and raises instead, for callers
-    whose answer would be silently wrong if it did - see MAX_TOP for the measurements.
-    Paging this feed returns the right number of rows with the wrong rows in them.
+    `single_page=True` stops after the first page instead of following the link, for
+    callers whose answer would be silently wrong if it did - see MAX_TOP for the
+    measurements. Paging this feed returns the right number of rows with the wrong rows
+    in them, so one page is not a smaller answer than two, it is the only correct one.
+    Truncation is logged; callers that order their query take the truncation where they
+    want it.
 
     `path` is the three-part `{workspace}/{collection}/{dataset}` address - the same
     triple the Upload API's `Target` uses. `query` is a pre-encoded query string; it is
@@ -185,12 +188,18 @@ def iter_rows(
         if not next_link:
             break
         if single_page:
-            raise ODataError(
-                f"{path}: result needs more than one page at $top={MAX_TOP}, and paged "
-                "reads from this feed are not trustworthy - the row count is right but "
-                "rows are duplicated and dropped non-deterministically (see MAX_TOP). "
-                "Narrow the query or fix the feed; do not page it."
+            # Stop here rather than follow it. Deliberate truncation, not an error: the
+            # caller ordered the query so the rows it needs are at the front, and the
+            # tail it is giving up is the part nobody reaches (see responsive.py).
+            # Following the link is the thing that must never happen - a single page is
+            # internally consistent and reproducible, a paged read is neither.
+            logger.warning(
+                "odata: %s returned more than one page at $top=%d - using the first "
+                "page only. Rows are ordered, so this drops the tail of the result; "
+                "if that tail matters, narrow the query rather than paging it.",
+                path, MAX_TOP,
             )
+            break
         # Relative, and already percent-encoded - concatenate, never re-encode.
         url = next_link if next_link.startswith("http") else f"{base_url}{next_link}"
 
